@@ -46,4 +46,4 @@ Issues = "https://github.com/zhangcy122/OpenJevPro/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["openjevpro*"]
+include = ["openjevpro*", "sts2jev"]

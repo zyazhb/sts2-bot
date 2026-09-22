@@ -1,0 +1,55 @@
+{
+  "available_actions": [
+    {"name": "play_card", "requires_index": true},
+    {"name": "end_turn"}
+  ],
+  "state": {
+    "screen": "COMBAT",
+    "run_id": "TEST1",
+    "turn": 1,
+    "available_actions": ["play_card", "end_turn"],
+    "combat": {
+      "player": {"hp": "72/80", "energy": 3, "block": 0},
+      "hand": [
+        {
+          "i": 0,
+          "card_id": "STRIKE",
+          "name": "Strike",
+          "energy_cost": 1,
+          "playable": true,
+          "requires_target": true,
+          "targets": [0]
+        },
+        {
+          "i": 1,
+          "card_id": "DEFEND",
+          "name": "Defend",
+          "energy_cost": 1,
+          "playable": true,
+          "requires_target": false
+        },
+        {
+          "i": 2,
+          "card_id": "BASH",
+          "name": "Bash",
+          "energy_cost": 2,
+          "playable": false,
+          "requires_target": true,
+          "targets": [0]
+        }
+      ],
+      "enemies": [
+        {
+          "i": 0,
+          "enemy_id": "CULTIST",
+          "name": "Cultist",
+          "current_hp": 50,
+          "max_hp": 50,
+          "alive": true,
+          "hittable": true,
+          "intents": [{"i": 0, "intent_type": "Attack", "total_damage": 7, "label": "7"}]
+        }
+      ]
+    }
+  }
+}

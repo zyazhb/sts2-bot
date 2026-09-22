@@ -1,0 +1,19 @@
+{
+  "available_actions": [
+    "continue_run",
+    "open_character_select",
+    "invite_ai_teammate",
+    "abandon_run",
+    "save_and_quit",
+    "switch_profile",
+    "return_to_main_menu"
+  ],
+  "state": {
+    "screen": "MAIN_MENU",
+    "available_actions": [
+      "continue_run",
+      "open_character_select",
+      "invite_ai_teammate"
+    ]
+  }
+}

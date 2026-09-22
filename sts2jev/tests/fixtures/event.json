@@ -1,0 +1,14 @@
+{
+  "available_actions": ["choose_event_option"],
+  "state": {
+    "screen": "EVENT",
+    "event": {
+      "id": "NEOW",
+      "options": [
+        {"i": 0, "title": "Take the gold", "locked": false, "kill": false},
+        {"i": 1, "title": "Cursed bargain", "locked": false, "kill": true},
+        {"i": 2, "title": "Locked relic", "locked": true, "kill": false}
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "available_actions": ["play_card", "end_turn", "use_potion"],
+  "state": {
+    "screen": "COMBAT",
+    "run_id": "LAYER1",
+    "turn": 2,
+    "combat": {
+      "player": {"current_hp": 40, "max_hp": 80, "energy": 3, "block": 0},
+      "action_readiness": {"can_use_combat_actions": true, "reason": "ready"},
+      "hand": [],
+      "enemies": [
+        {"i": 0, "name": "Slaver A", "current_hp": 20, "max_hp": 20, "alive": true, "hittable": true, "intents": [{"total_damage": 6}]},
+        {"i": 1, "name": "Slaver B", "current_hp": 18, "max_hp": 18, "alive": true, "hittable": true, "intents": [{"total_damage": 9}]},
+        {"i": 2, "name": "Slaver C", "current_hp": 22, "max_hp": 22, "alive": true, "hittable": true, "intents": [{"total_damage": 4}]}
+      ]
+    },
+    "run": {
+      "potions": [
+        {"i": 0, "name": "Fire Potion", "occupied": true, "usable": true, "requires_target": true, "targets": [0, 1, 2]}
+      ]
+    }
+  }
+}

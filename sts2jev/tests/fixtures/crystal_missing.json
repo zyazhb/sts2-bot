@@ -1,0 +1,14 @@
+{
+  "available_actions": [
+    {"name": "crystal_clear_cell", "requires_coordinates": true},
+    {"name": "proceed"}
+  ],
+  "state": {
+    "screen": "CRYSTAL_SPHERE",
+    "crystal_sphere": {
+      "divinations_left": 2,
+      "tool": "small",
+      "hidden_cells": []
+    }
+  }
+}

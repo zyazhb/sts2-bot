@@ -1,0 +1,16 @@
+{
+  "available_actions": ["buy_card", "close_shop_inventory"],
+  "state": {
+    "screen": "SHOP",
+    "run_id": "SHOP1",
+    "shop": {
+      "open": true,
+      "cards": [
+        {"i": 0, "name": "Pommel Strike", "price": 45, "stocked": true, "affordable": true, "on_sale": true},
+        {"i": 1, "name": "Carnage", "price": 150, "stocked": true, "affordable": false},
+        {"i": 2, "name": "Clash", "price": 50, "stocked": false, "affordable": false}
+      ]
+    },
+    "run": {"gold": 60}
+  }
+}
