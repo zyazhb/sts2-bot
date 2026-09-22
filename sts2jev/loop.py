@@ -73,21 +73,87 @@ def run_loop(
         if not expanded.candidates:
             raise StopPlay(f"no legal candidates on {screen}")
 
-        decision = _end_turn_if_no_play(expanded.candidates)
+        pool = _without_early_end(expanded.candidates, state)
+        decision = _end_turn_if_no_play(pool)
         if decision is None:
-            prompt = snapshot
-            if screen == "COMBAT":
-                catalog = game.power_catalog() if hasattr(game, "power_catalog") else {}
-                if catalog:
-                    prompt = {**snapshot, "power_catalog": catalog}
-            decision = decide_action(jev, prompt, expanded.candidates)
+            decision = decide_action(jev, _prompt_snapshot(game, snapshot), pool)
         if decision.abstained or decision.candidate is None:
             raise StopPlay(f"no legal candidates on {screen}", candidates=expanded.candidates)
+        if decision.candidate is not None and not candidate_still_current(
+            game.snapshot(), decision.candidate, frozenset(blocked)
+        ):
+            print(f"stale context; {decision.candidate.id} no longer matches")
+            continue
         outcome = _submit(game, decision, poll_s=poll_s)
         if outcome == "ok" and decision.candidate is not None:
             opened_claim = _note_reward_choice(decision.candidate, blocked_ids, opened_claim)
         if outcome == "stale":
             continue
+
+
+def _prompt_snapshot(game: Sts2Client, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Attach effect catalogs. They are looked up while slicing and are not copied into the prompt."""
+    prompt = snapshot
+    for key, method in (
+        ("power_catalog", "power_catalog"),
+        ("relic_catalog", "relic_catalog"),
+        ("potion_catalog", "potion_catalog"),
+        ("card_catalog", "card_catalog"),
+        ("move_catalog", "move_catalog"),
+    ):
+        loader = getattr(game, method, None)
+        if loader is None:
+            continue
+        catalog = loader()
+        if catalog:
+            prompt = {**prompt, key: catalog}
+    return prompt
+
+
+def candidate_still_current(snapshot: dict[str, Any], candidate: Candidate, blocked_ids: frozenset[str]) -> bool:
+    """The chosen id and label still describe this frame. A model call can outlive the snapshot."""
+    expanded = expand(snapshot, blocked_ids=blocked_ids)
+    if expanded.stop_reason:
+        return False
+    return any(item.id == candidate.id and item.label == candidate.label for item in expanded.candidates)
+
+
+def _without_early_end(candidates: list[Candidate], state: dict[str, Any]) -> list[Candidate]:
+    """End the turn only when nothing safe is left to play.
+
+    An attack into Thorns or Reflect stays paired with end_turn, because playing it can cost more HP than passing.
+    """
+    plays = [item for item in candidates if item.action == "play_card"]
+    if not plays or all(_attack_into_retaliation(item, state) for item in plays):
+        return candidates
+    return [item for item in candidates if item.action != "end_turn"]
+
+
+def _attack_into_retaliation(candidate: Candidate, state: dict[str, Any]) -> bool:
+    if candidate.target_key is None or "damage" not in candidate.label.casefold():
+        return False
+    enemies = (state.get("combat") or {}).get("enemies") or []
+    for offset, enemy in enumerate(enemies):
+        if not isinstance(enemy, dict):
+            continue
+        index = enemy.get("i", enemy.get("index", offset))
+        if index != candidate.target_key:
+            continue
+        return _retaliates(enemy)
+    return False
+
+
+def _retaliates(enemy: dict[str, Any]) -> bool:
+    texts: list[str] = []
+    for power in enemy.get("powers") or []:
+        if isinstance(power, str):
+            texts.append(power)
+        elif isinstance(power, dict):
+            texts.append(
+                " ".join(str(power.get(key) or "") for key in ("power_id", "id", "name", "line"))
+            )
+    blob = " ".join(texts).casefold()
+    return "thorn" in blob or "reflect" in blob
 
 
 def _end_turn_if_no_play(candidates: list[Candidate]) -> ActionDecision | None:

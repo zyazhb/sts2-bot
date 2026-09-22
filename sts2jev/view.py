@@ -6,6 +6,15 @@ import re
 from typing import Any
 
 from sts2jev.candidates import Candidate
+from sts2jev.describe import (
+    ascension_lines as _ascension_lines,
+    glossary as _glossary,
+    map_routes as _map_routes,
+    orb_lines as _orb_lines,
+    pet_lines as _pet_lines,
+    pile_lines as _pile_lines,
+    sale_lines as _sale_lines,
+)
 
 _MARKUP = re.compile(r"\[/?[a-zA-Z]+\]")
 
@@ -16,49 +25,80 @@ def slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[s
     combat = state.get("combat") or {}
     player = combat.get("player") or {}
     run = state.get("run") or {}
-    sliced: dict[str, Any] = {
-        "screen": screen,
-        "run_id": state.get("run_id"),
-        "hp": _hp(player) or _hp(run),
-        "gold": run.get("gold"),
-        "options": {item.id: item.label for item in candidates},
-    }
-    catalog = snapshot.get("power_catalog") or {}
+    sliced: dict[str, Any] = {"screen": screen, "options": {item.id: item.label for item in candidates}}
+    _put(sliced, "run_id", state.get("run_id"))
+    _put(sliced, "turn", state.get("turn"))
+    _put(sliced, "character", run.get("character") or run.get("character_name"))
+    _put(sliced, "floor", run.get("floor"))
+    _put(sliced, "act", run.get("act_id"))
+    _put(sliced, "boss", run.get("boss_id"))
+    _put(sliced, "ascension", run.get("ascension"))
+    _put(sliced, "hp", _hp(player) or _hp(run))
+    _put(sliced, "max_energy", run.get("max_energy"))
+    _put(sliced, "gold", run.get("gold"))
+    _put(sliced, "deck", _deck_lines(run))
+    _put(sliced, "relics", _relic_lines(run))
+    _put(sliced, "potions", _potion_lines(run))
+    _put(sliced, "ascension_effects", _ascension_lines(run))
+    _put(sliced, "glossary", _glossary(state.get("glossary")))
+    powers = snapshot.get("power_catalog") or {}
+    relics = snapshot.get("relic_catalog") or {}
+    potions = snapshot.get("potion_catalog") or {}
+    moves = snapshot.get("move_catalog") or {}
     if screen == "COMBAT":
         sliced["energy"] = player.get("energy")
         sliced["block"] = player.get("block")
-        sliced["powers"] = _power_lines(player.get("powers"), catalog)
-        sliced["end_turn_will_kill"] = combat.get("end_turn_will_kill_player")
-        sliced["enemies"] = [_enemy_slice(enemy, catalog) for enemy in combat.get("enemies") or []]
+        _put(sliced, "stars", player.get("stars"))
+        _put(sliced, "focus", player.get("focus"))
+        _put(sliced, "orbs", _orb_lines(player.get("orbs")))
+        _put(sliced, "pets", _pet_lines(player.get("pets"), powers))
+        if player.get("pet_missing"):
+            sliced["pet_missing"] = True
+        if "cards_played_this_turn" in player:
+            sliced["played_this_turn"] = {
+                "cards": player.get("cards_played_this_turn"),
+                "attacks": player.get("attacks_played_this_turn"),
+                "skills": player.get("skills_played_this_turn"),
+            }
+        sliced["powers"] = _power_lines(player.get("powers"), powers)
+        _put(sliced, "end_turn_will_kill", combat.get("end_turn_will_kill_player"))
+        _put(sliced, "lethal_risks", combat.get("lethal_risks") or [])
+        sliced["enemies"] = [_enemy_slice(enemy, powers, moves) for enemy in combat.get("enemies") or []]
         sliced["hand"] = [_hand_slice(card) for card in combat.get("hand") or []]
+        sliced["draw"] = _pile_lines(combat.get("draw"))
+        sliced["discard"] = _pile_lines(combat.get("discard"))
+        sliced["exhaust"] = _pile_lines(combat.get("exhaust"))
     elif screen == "MAP":
         mapping = state.get("map") or {}
         sliced["nodes"] = mapping.get("options") or mapping.get("available_nodes") or []
-        sliced["character"] = run.get("character") or run.get("character_name")
-        sliced["floor"] = run.get("floor")
-        sliced["deck"] = _deck_lines(run)
-        sliced["relics"] = _relic_lines(run)
-        sliced["potions"] = _potion_lines(run)
+        _put(sliced, "boss_node", mapping.get("boss_node"))
+        _put(sliced, "routes", _map_routes(mapping))
     elif screen == "SHOP":
         shop = state.get("shop") or {}
         sliced["shop_open"] = shop.get("open", shop.get("is_open"))
-        sliced["cards"] = shop.get("cards") or []
-        sliced["relics_for_sale"] = shop.get("relics") or []
-        sliced["potions_for_sale"] = shop.get("potions") or []
-        sliced["removal"] = shop.get("card_removal") or shop.get("removal")
-        sliced["deck"] = _deck_lines(run)
-        sliced["owned_relics"] = _relic_lines(run)
+        sliced["cards"] = _sale_lines(shop.get("cards"), snapshot.get("card_catalog") or {})
+        sliced["relics_for_sale"] = _sale_lines(shop.get("relics"), relics)
+        sliced["potions_for_sale"] = _sale_lines(shop.get("potions"), potions)
+        _put(sliced, "removal", shop.get("card_removal") or shop.get("removal"))
     elif screen == "REWARD":
         sliced["reward"] = state.get("reward") or {}
-        sliced["deck"] = _deck_lines(run)
     elif screen == "CARD_SELECTION":
         sliced["selection"] = state.get("selection") or {}
-        sliced["deck"] = _deck_lines(run)
     elif screen == "EVENT":
         sliced["event"] = state.get("event") or {}
     elif screen == "REST":
         sliced["rest"] = state.get("rest") or {}
+    elif screen == "CHEST":
+        chest = state.get("chest") or {}
+        _put(sliced, "chest_open", chest.get("opened", chest.get("is_opened")))
+        sliced["relic_choices"] = _sale_lines(chest.get("relics") or chest.get("relic_options"), relics)
     return sliced
+
+
+def _put(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is None or value == "" or value == [] or value == {}:
+        return
+    target[key] = value
 
 
 def _hp(entity: dict[str, Any]) -> Any:
@@ -85,17 +125,26 @@ def power_catalog_from_items(items: list[Any]) -> dict[str, str]:
     return catalog
 
 
-def _enemy_slice(enemy: dict[str, Any], catalog: dict[str, str] | None = None) -> dict[str, Any]:
+def _enemy_slice(
+    enemy: dict[str, Any],
+    catalog: dict[str, str] | None = None,
+    moves: dict[str, str] | None = None,
+) -> dict[str, Any]:
     raw_intents = enemy.get("intents")
     if not raw_intents and enemy.get("intent"):
         raw_intents = [enemy.get("intent")]
-    return {
+    sliced: dict[str, Any] = {
         "name": enemy.get("name") or enemy.get("line") or enemy.get("enemy_id"),
         "hp": _hp(enemy),
         "block": enemy.get("block"),
         "powers": _power_lines(enemy.get("powers"), catalog),
         "intents": [_intent_line(intent) for intent in raw_intents or []],
     }
+    move_id = str(enemy.get("move_id") or "")
+    move = (moves or {}).get(move_id) or (moves or {}).get(move_id.removesuffix("_MOVE"))
+    if move:
+        sliced["move"] = move
+    return sliced
 
 
 def _power_lines(powers: Any, catalog: dict[str, str] | None = None) -> list[str]:
@@ -184,7 +233,7 @@ def _intent_line(intent: Any) -> str:
             bits.append(f"{damage}x{hits}")
         bits.append(f"{intent['total_damage']} dmg")
     elif intent.get("label"):
-        bits.append(str(intent["label"]))
+        bits.append(_plain(str(intent["label"])))
     if intent.get("status_card_count") is not None:
         bits.append(f"{intent['status_card_count']} status")
     return f"{kind} ({', '.join(bits)})" if bits else kind
@@ -225,8 +274,8 @@ def _relic_lines(run: dict[str, Any]) -> list[str]:
         text = str(name)
         if stack not in (None, ""):
             text = f"{text} x{stack}"
-        if desc not in (None, "") and str(desc) != text:
-            text = f"{text}: {desc}"
+        if desc not in (None, "") and _plain(str(desc)) not in text:
+            text = f"{text}: {_plain(str(desc))}"
         lines.append(text)
     return lines
 
@@ -239,15 +288,13 @@ def _potion_lines(run: dict[str, Any]) -> list[str]:
             continue
         if not isinstance(potion, dict) or ("occupied" in potion and not potion["occupied"]):
             continue
-        line = potion.get("line")
-        if line not in (None, ""):
-            lines.append(str(line))
-            continue
-        name = potion.get("name") or potion.get("potion_id")
-        if not name:
+        text = str(potion.get("line") or potion.get("name") or potion.get("potion_id") or "")
+        if not text:
             continue
         desc = potion.get("description")
-        lines.append(f"{name}: {desc}" if desc not in (None, "") else str(name))
+        if desc not in (None, "") and _plain(str(desc)) not in text:
+            text = f"{text}: {_plain(str(desc))}"
+        lines.append(text)
     return lines
 
 
@@ -256,9 +303,22 @@ def _at(items: list[Any], index: int) -> Any:
 
 
 def _hand_slice(card: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": card.get("name") or card.get("line") or card.get("card_id"),
+    text = card.get("line") or card.get("resolved_rules_text") or card.get("name") or card.get("card_id")
+    sliced: dict[str, Any] = {
+        "line": _plain(str(text)) if text else "?",
         "energy_cost": card.get("energy_cost"),
         "playable": card.get("playable"),
-        "requires_target": card.get("requires_target"),
     }
+    if card.get("star_cost"):
+        sliced["star_cost"] = card["star_cost"]
+    if card.get("keywords"):
+        sliced["keywords"] = card["keywords"]
+    if card.get("mods"):
+        sliced["mods"] = card["mods"]
+    target = card.get("target")
+    if target not in (None, "", "None", "none"):
+        sliced["target"] = target
+    why = card.get("unplayable_reason") or card.get("why")
+    if why and card.get("playable") is False:
+        sliced["why"] = why
+    return sliced

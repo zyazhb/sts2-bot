@@ -214,7 +214,10 @@ def _criteria(snapshot: dict[str, Any]) -> str:
         "COMBAT": (
             "Finish the fight with as much HP left as possible. "
             "Spend energy to block or remove the damage coming this turn. "
-            "Read each power description before choosing a target. "
+            "Do not end the turn while a card can still be played, unless every remaining play is an attack into Thorns or Reflect. "
+            "The state lists this turn's hand, draw, discard, exhaust, relics, potions, keyword glossary, "
+            "and each enemy's next move. Read those, including every power description, before you play, "
+            "discard a potion, or end the turn. "
             "Do not attack Thorns or Reflect unless the HP lost is less than letting that enemy act. "
             "Play toward a stronger deck and clearing the run."
         ),

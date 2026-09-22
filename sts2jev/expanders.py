@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from sts2jev.candidates import Candidate, action_body, flag, item_index, item_label, target_indices
+from sts2jev.view import _plain
 
 
 def crystal_cells(state: dict[str, Any]) -> list[tuple[int, int]]:
@@ -160,7 +161,7 @@ def _potion_action(state: dict[str, Any], action: str, ready_keys: tuple[str, ..
         if not flag(potion, *ready_keys, default=True):
             continue
         option_index = item_index(potion, offset)
-        name = item_label(potion, "name", "line", "potion_id")
+        name = _potion_text(potion)
         if action == "use_potion" and flag(potion, "requires_target"):
             for target_index in target_indices(potion) or [
                 item_index(enemy, i)
@@ -188,6 +189,14 @@ def _potion_action(state: dict[str, Any], action: str, ready_keys: tuple[str, ..
                 )
             )
     return out
+
+
+def _potion_text(potion: dict[str, Any]) -> str:
+    name = item_label(potion, "name", "line", "potion_id")
+    desc = potion.get("description")
+    if desc not in (None, "") and _plain(str(desc)) not in name:
+        return f"{name}: {_plain(str(desc))}"
+    return name
 
 
 def _coord(item: dict[str, Any]) -> str:

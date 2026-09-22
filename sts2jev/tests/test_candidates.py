@@ -13,7 +13,7 @@ from openjevpro.schemas import ChoiceDecision
 from sts2jev.candidates import Candidate, expand
 from sts2jev.decide import collapse_equivalent, decide_action, group_by_action, group_by_index
 from sts2jev.view import slice_state as _slice_state
-from sts2jev.loop import StopPlay, _correct_once, _should_wait_combat, run_loop
+from sts2jev.loop import StopPlay, _correct_once, _should_wait_combat, candidate_still_current, run_loop
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -421,6 +421,137 @@ class ExpandTests(unittest.TestCase):
         )
         self.assertEqual([item.id for item in result.candidates], ["close_shop_inventory"])
 
+    def test_potion_label_includes_effect(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["discard_potion"],
+                "state": {
+                    "screen": "COMBAT",
+                    "run": {
+                        "potions": [
+                            {
+                                "i": 0,
+                                "line": "0: Blessing of the Forge: CombatOnly",
+                                "description": "[gold]Upgrade[/gold] all cards in your Hand for the rest of combat.",
+                                "occupied": True,
+                                "discard": True,
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+        self.assertIn("Upgrade all cards", result.candidates[0].label)
+
+    def test_combat_slice_includes_piles_relics_potions_and_glossary(self) -> None:
+        sliced = _slice_state(
+            {
+                "move_catalog": {"DOUBLE_SMASH_MOVE": "Double Smash"},
+                "relic_catalog": {"BURNING_BLOOD": "Burning Blood: At the end of combat, heal HP."},
+                "state": {
+                    "screen": "COMBAT",
+                    "turn": 5,
+                    "glossary": {"Vulnerable": "Vulnerable units take more attack damage."},
+                    "run": {
+                        "character": "The Ironclad",
+                        "floor": 7,
+                        "relics": ["Burning Blood"],
+                        "relic_descriptions": ["At the end of combat, heal [green]{Heal}[/green] HP."],
+                        "potions": [
+                            {
+                                "i": 0,
+                                "line": "0: Blessing of the Forge: CombatOnly",
+                                "description": "Upgrade all cards in your Hand for the rest of combat.",
+                                "occupied": True,
+                            }
+                        ],
+                        "deck": [{"line": "Strike*5 [1 Energy]: Deal 6 damage."}],
+                    },
+                    "combat": {
+                        "player": {"hp": "22/97", "energy": 3, "block": 0, "cards_played_this_turn": 0},
+                        "hand": [
+                            {
+                                "i": 0,
+                                "line": "Strike [1 Energy]: Deal 6 damage.",
+                                "energy_cost": 1,
+                                "playable": True,
+                                "target": "enemies",
+                                "keywords": ["Vulnerable"],
+                            }
+                        ],
+                        "draw": [{"line": "Bash [2 Energy]: Deal 8 damage. Apply 2 Vulnerable."}],
+                        "discard": [],
+                        "exhaust": [{"line": "Ascender's Bane [0 Energy]: Unplayable."}],
+                        "enemies": [
+                            {
+                                "name": "Gremlin Merc",
+                                "hp": "32/52",
+                                "move_id": "DOUBLE_SMASH_MOVE",
+                                "powers": ["THIEVERY_POWER 20"],
+                                "intents": [
+                                    {"intent_type": "Attack", "damage": 9, "hits": 2, "total_damage": 18},
+                                    {"intent_type": "Debuff", "label": None},
+                                ],
+                            }
+                        ],
+                    },
+                },
+            },
+            [],
+        )
+        self.assertEqual(sliced["character"], "The Ironclad")
+        self.assertEqual(sliced["hand"][0]["line"], "Strike [1 Energy]: Deal 6 damage.")
+        self.assertIn("Bash", sliced["draw"][0])
+        self.assertIn("Ascender", sliced["exhaust"][0])
+        self.assertIn("{Heal}", sliced["relics"][0])
+        self.assertIn("Upgrade all cards", sliced["potions"][0])
+        self.assertIn("Vulnerable", sliced["glossary"])
+        self.assertEqual(sliced["enemies"][0]["move"], "Double Smash")
+        self.assertIn("Debuff", sliced["enemies"][0]["intents"])
+        self.assertEqual(sliced["played_this_turn"]["cards"], 0)
+
+    def test_shop_slice_uses_relic_effect(self) -> None:
+        sliced = _slice_state(
+            {
+                "relic_catalog": {"BURNING_BLOOD": "Burning Blood: At the end of combat, heal 6 HP."},
+                "state": {
+                    "screen": "SHOP",
+                    "run": {"gold": 99, "deck": [{"line": "Strike*5"}]},
+                    "shop": {
+                        "open": True,
+                        "relics": [{"name": "Burning Blood", "relic_id": "BURNING_BLOOD", "price": 150}],
+                        "cards": [],
+                        "potions": [],
+                    },
+                },
+            },
+            [],
+        )
+        self.assertIn("heal 6 HP", sliced["relics_for_sale"][0])
+        self.assertEqual(sliced["deck"], ["Strike*5"])
+
+    def test_map_route_lists_the_next_nodes(self) -> None:
+        sliced = _slice_state(
+            {
+                "state": {
+                    "screen": "MAP",
+                    "run": {"character": "Ironclad"},
+                    "map": {
+                        "boss_node": "14,3",
+                        "options": [{"i": 0, "node_type": "Monster", "coord": "2,1"}],
+                        "nodes": [
+                            {"coord": "2,1", "node_type": "Monster", "children": ["3,1", "3,2"]},
+                            {"coord": "3,1", "node_type": "Rest"},
+                            {"coord": "3,2", "node_type": "Shop"},
+                        ],
+                    },
+                }
+            },
+            [],
+        )
+        self.assertEqual(sliced["routes"], ["Monster 2,1 -> Rest 3,1, Shop 3,2"])
+        self.assertEqual(sliced["boss_node"], "14,3")
+
 
 class LayerTests(unittest.TestCase):
     def _layered_snapshot(self) -> dict[str, Any]:
@@ -545,12 +676,12 @@ class FakeGame:
     def snapshot(self) -> dict[str, Any]:
         if not self.snapshots:
             raise AssertionError("snapshot exhausted")
-        if len(self.snapshots) == 1:
-            return self.snapshots[0]
-        return self.snapshots.pop(0)
+        return self.snapshots[0]
 
     def act(self, body: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         self.acts.append(body)
+        if len(self.snapshots) > 1:
+            self.snapshots.pop(0)
         if self.act_results:
             return self.act_results.pop(0)
         return {"status": "completed"}
@@ -616,6 +747,83 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(jev.calls, [])
         self.assertEqual(game.acts[0]["action"], "end_turn")
 
+    def test_playable_card_is_not_skipped_by_ending_the_turn(self) -> None:
+        combat = {
+            "available_actions": ["play_card", "end_turn"],
+            "state": {
+                "screen": "COMBAT",
+                "combat": {
+                    "action_readiness": {"can_use_combat_actions": True},
+                    "player": {"hp": "70/80", "energy": 2, "block": 0},
+                    "hand": [
+                        {
+                            "i": 0,
+                            "line": "Defend [1 Energy]: Gain 5 Block.",
+                            "energy_cost": 1,
+                            "playable": True,
+                        },
+                        {
+                            "i": 1,
+                            "line": "Strike [1 Energy]: Deal 6 damage.",
+                            "energy_cost": 1,
+                            "playable": True,
+                            "target": "enemies",
+                            "targets": [0],
+                        },
+                    ],
+                    "enemies": [{"i": 0, "name": "Gremlin Merc", "hp": "52/52", "alive": True, "hittable": True}],
+                },
+            },
+        }
+        paused = {"available_actions": [], "state": {"screen": "PAUSE_MENU"}}
+        game = FakeGame([combat, paused])
+        jev = ScriptedJev(["play_card:0"])
+        with self.assertRaises(StopPlay):
+            run_loop(game, jev, poll_s=0)
+        self.assertIn("play_card:0", jev.calls[0])
+        self.assertNotIn("end_turn", jev.calls[0])
+        self.assertEqual(game.acts[0]["action"], "play_card")
+
+    def test_attack_into_thorns_can_still_end_the_turn(self) -> None:
+        combat = {
+            "available_actions": ["play_card", "end_turn"],
+            "state": {
+                "screen": "COMBAT",
+                "combat": {
+                    "action_readiness": {"can_use_combat_actions": True},
+                    "player": {"hp": "40/80", "energy": 1, "block": 0},
+                    "hand": [
+                        {
+                            "i": 0,
+                            "line": "Strike [1 Energy]: Deal 6 damage.",
+                            "energy_cost": 1,
+                            "playable": True,
+                            "target": "enemies",
+                            "targets": [0],
+                        }
+                    ],
+                    "enemies": [
+                        {
+                            "i": 0,
+                            "name": "Toadpole",
+                            "hp": "25/25",
+                            "alive": True,
+                            "hittable": True,
+                            "powers": ["THORNS_POWER 3"],
+                        }
+                    ],
+                },
+            },
+        }
+        paused = {"available_actions": [], "state": {"screen": "PAUSE_MENU"}}
+        game = FakeGame([combat, paused])
+        jev = ScriptedJev(["end_turn"])
+        with self.assertRaises(StopPlay):
+            run_loop(game, jev, poll_s=0)
+        self.assertIn("end_turn", jev.calls[0])
+        self.assertIn("play_card:0:target:0", jev.calls[0])
+        self.assertEqual(game.acts[0]["action"], "end_turn")
+
     def test_closed_shop_must_open_before_proceed(self) -> None:
         shop = {
             "available_actions": ["open_shop_inventory", "proceed"],
@@ -670,6 +878,14 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(decision.reason, "random")
         assert decision.candidate is not None
         self.assertEqual(decision.candidate.id, result.candidates[-1].id)
+
+    def test_changed_hand_is_not_the_frame_that_was_decided(self) -> None:
+        current = load_fixture("combat_compact.json")
+        decided = expand(current).candidates[0]
+        self.assertTrue(candidate_still_current(current, decided, frozenset()))
+        moved = load_fixture("combat_compact.json")
+        moved["state"]["combat"]["hand"][0]["name"] = "Defend"
+        self.assertFalse(candidate_still_current(moved, decided, frozenset()))
 
 
 if __name__ == "__main__":

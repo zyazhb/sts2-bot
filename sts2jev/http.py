@@ -36,6 +36,10 @@ class Sts2Client:
         self.timeout = timeout
         self.session = requests.Session()
         self._power_catalog: dict[str, str] | None = None
+        self._relic_catalog: dict[str, str] | None = None
+        self._potion_catalog: dict[str, str] | None = None
+        self._card_catalog: dict[str, str] | None = None
+        self._move_catalog: dict[str, str] | None = None
 
     def connect(self) -> dict[str, Any]:
         """Confirm the mod is up and switch to the advertised api_port."""
@@ -76,20 +80,55 @@ class Sts2Client:
 
     def power_catalog(self) -> dict[str, str]:
         """id and name to plain-text effect. Loaded once from GET /data/powers."""
-        if self._power_catalog is not None:
-            return self._power_catalog
         from sts2jev.view import power_catalog_from_items
 
+        return self._named_catalog("_power_catalog", "/data/powers", power_catalog_from_items)
+
+    def relic_catalog(self) -> dict[str, str]:
+        from sts2jev.view import power_catalog_from_items
+
+        return self._named_catalog("_relic_catalog", "/data/relics", power_catalog_from_items)
+
+    def potion_catalog(self) -> dict[str, str]:
+        from sts2jev.view import power_catalog_from_items
+
+        return self._named_catalog("_potion_catalog", "/data/potions", power_catalog_from_items)
+
+    def card_catalog(self) -> dict[str, str]:
+        from sts2jev.view import power_catalog_from_items
+
+        return self._named_catalog("_card_catalog", "/data/cards", power_catalog_from_items)
+
+    def move_catalog(self) -> dict[str, str]:
+        from sts2jev.describe import move_catalog_from_items
+
+        return self._named_catalog("_move_catalog", "/data/monsters", move_catalog_from_items)
+
+    def _named_catalog(self, attr: str, path: str, parser: Any) -> dict[str, str]:
+        cached = getattr(self, attr)
+        if cached is not None:
+            return cached
+        items = self._load_items(path)
+        if not items:
+            return {}
+        catalog = parser(items)
+        if not catalog:
+            return {}
+        setattr(self, attr, catalog)
+        return catalog
+
+    def _load_items(self, path: str) -> list[Any]:
         try:
-            resp = self.session.get(f"{self.base_url}/data/powers", timeout=self.timeout)
+            resp = self.session.get(f"{self.base_url}{path}", timeout=self.timeout)
             payload = resp.json()
         except (requests.RequestException, ValueError):
-            return {}
-        items = payload if isinstance(payload, list) else payload.get("data", payload)
-        if not isinstance(items, list) or not items:
-            return {}
-        self._power_catalog = power_catalog_from_items(items)
-        return self._power_catalog
+            return []
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            items = payload.get("data", payload)
+            return items if isinstance(items, list) else []
+        return []
 
     def _get(self, path: str) -> dict[str, Any]:
         return self._request("GET", path)
