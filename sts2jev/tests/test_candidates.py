@@ -6,11 +6,12 @@ import json
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from openjevpro.schemas import ChoiceDecision
 
 from sts2jev.candidates import Candidate, expand
-from sts2jev.decide import collapse_equivalent, decide_action, group_by_action, group_by_index
+from sts2jev.decide import _slice_state, collapse_equivalent, decide_action, group_by_action, group_by_index
 from sts2jev.loop import StopPlay, _correct_once, _should_wait_combat, run_loop
 
 
@@ -123,6 +124,210 @@ class ExpandTests(unittest.TestCase):
         )
         self.assertEqual([item.id for item in result.candidates], ["confirm_modal"])
 
+    def test_card_reward_overlay_does_not_claim_row(self) -> None:
+        result = expand(
+            {
+                "available_actions": [
+                    "claim_reward",
+                    "skip_reward_cards",
+                    "choose_reward_card",
+                ],
+                "state": {
+                    "screen": "REWARD",
+                    "reward": {
+                        "pending_card_choice": True,
+                        "cards": [{"i": 0, "name": "Pommel Strike"}],
+                        "rewards": [{"i": 0, "reward_type": "Card", "description": "Add a card", "claimable": True}],
+                    },
+                },
+            }
+        )
+        ids = [item.id for item in result.candidates]
+        self.assertEqual(ids, ["skip_reward_cards", "choose_reward_card:0"])
+        self.assertNotIn("claim_reward:0", ids)
+
+    def test_combat_slice_includes_hp_powers_and_intents(self) -> None:
+        sliced = _slice_state(
+            {
+                "state": {
+                    "screen": "COMBAT",
+                    "combat": {
+                        "player": {
+                            "hp": "40/80",
+                            "energy": 3,
+                            "block": 5,
+                            "powers": [
+                                {"name": "Strength", "amount": 2},
+                                "Vulnerable 1 [debuff]",
+                            ],
+                        },
+                        "enemies": [
+                            {
+                                "name": "Cultist",
+                                "current_hp": 48,
+                                "max_hp": 50,
+                                "block": 0,
+                                "powers": [{"power_id": "RITUAL", "amount": 3}],
+                                "intents": [
+                                    {
+                                        "intent_type": "Attack",
+                                        "damage": 6,
+                                        "hits": 2,
+                                        "total_damage": 12,
+                                    }
+                                ],
+                            }
+                        ],
+                        "hand": [],
+                    },
+                }
+            },
+            [],
+        )
+        self.assertEqual(sliced["hp"], "40/80")
+        self.assertEqual(sliced["powers"], ["Strength 2", "Vulnerable 1 [debuff]"])
+        enemy = sliced["enemies"][0]
+        self.assertEqual(enemy["hp"], "48/50")
+        self.assertEqual(enemy["powers"], ["RITUAL 3"])
+        self.assertEqual(enemy["intents"], ["Attack (6x2, 12 dmg)"])
+
+    def test_reward_choice_includes_current_deck(self) -> None:
+        sliced = _slice_state(
+            {
+                "state": {
+                    "screen": "REWARD",
+                    "run": {
+                        "deck": [
+                            {"line": "Strike [1 Energy]: Deal 6 damage. *5"},
+                            {"name": "Bash", "upgraded": True},
+                            "Defend *4",
+                        ]
+                    },
+                    "reward": {
+                        "pending_card_choice": True,
+                        "cards": [{"i": 0, "line": "Pommel Strike [1 Energy]: Deal 9 damage. Draw 1 card."}],
+                    },
+                }
+            },
+            [],
+        )
+        self.assertEqual(
+            sliced["deck"],
+            [
+                "Strike [1 Energy]: Deal 6 damage. *5",
+                "Bash+",
+                "Defend *4",
+            ],
+        )
+        self.assertEqual(sliced["reward"]["cards"][0]["line"].split()[0], "Pommel")
+
+    def test_selected_card_is_not_offered_again(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["select_deck_card", "confirm_selection"],
+                "state": {
+                    "screen": "CARD_SELECTION",
+                    "selection": {
+                        "prompt": "Choose up to 2 cards to put into your Hand.",
+                        "min": 0,
+                        "max": 2,
+                        "selected": 1,
+                        "confirm": True,
+                        "cards": [
+                            {"i": 0, "line": "Strike [1 Energy]: Deal 6 damage.", "selected": True},
+                        ],
+                    },
+                },
+            }
+        )
+        self.assertEqual([item.id for item in result.candidates], ["confirm_selection"])
+
+    def test_blocked_claim_is_omitted(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["claim_reward", "collect_rewards_and_proceed"],
+                "state": {
+                    "screen": "REWARD",
+                    "reward": {
+                        "rewards": [
+                            {"i": 0, "line": "Card: Add a card to your deck.", "claimable": True},
+                            {"i": 1, "line": "Gold: 13 Gold", "claimable": True},
+                        ]
+                    },
+                },
+            },
+            blocked_ids=frozenset({"claim_reward:0"}),
+        )
+        self.assertEqual(
+            [item.id for item in result.candidates],
+            ["claim_reward:1", "collect_rewards_and_proceed"],
+        )
+
+    def test_full_potion_belt_skips_potion_rewards(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["claim_reward", "collect_rewards_and_proceed"],
+                "state": {
+                    "screen": "REWARD",
+                    "run": {
+                        "potions": [
+                            {"i": 0, "name": "Fire Potion", "occupied": True},
+                            {"i": 1, "name": "Block Potion", "occupied": True},
+                            {"i": 2, "name": "Weak Potion", "occupied": True},
+                        ]
+                    },
+                    "reward": {
+                        "rewards": [
+                            {"i": 0, "reward_type": "Potion", "description": "Potion: Weak Potion", "claimable": True},
+                            {"i": 1, "reward_type": "Gold", "description": "Gold: 25", "claimable": True},
+                            {"i": 2, "description": "Potion: Explosive Ampoule", "claimable": True},
+                        ]
+                    },
+                },
+            }
+        )
+        ids = [item.id for item in result.candidates]
+        self.assertEqual(ids, ["claim_reward:1", "collect_rewards_and_proceed"])
+
+    def test_open_potion_slot_keeps_potion_reward(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["claim_reward"],
+                "state": {
+                    "screen": "REWARD",
+                    "run": {
+                        "potions": [
+                            {"i": 0, "name": "Fire Potion", "occupied": True},
+                            {"i": 1, "potion_id": None, "occupied": False},
+                        ]
+                    },
+                    "reward": {
+                        "rewards": [
+                            {"i": 0, "reward_type": "Potion", "description": "Potion: Weak Potion", "claimable": True},
+                        ]
+                    },
+                },
+            }
+        )
+        self.assertEqual([item.id for item in result.candidates], ["claim_reward:0"])
+
+    def test_full_potion_belt_skips_shop_potions(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["buy_potion", "close_shop_inventory"],
+                "state": {
+                    "screen": "SHOP",
+                    "run": {"potions": [{"i": 0, "name": "Fire Potion", "occupied": True}]},
+                    "shop": {
+                        "potions": [
+                            {"i": 0, "name": "Weak Potion", "price": 50, "stocked": True, "affordable": True},
+                        ]
+                    },
+                },
+            }
+        )
+        self.assertEqual([item.id for item in result.candidates], ["close_shop_inventory"])
+
 
 class LayerTests(unittest.TestCase):
     def _layered_snapshot(self) -> dict[str, Any]:
@@ -166,9 +371,12 @@ class LayerTests(unittest.TestCase):
         snapshot = self._layered_snapshot()
         result = expand(snapshot)
         jev = ScriptedJev(["UNKNOWN"])
-        decision = decide_action(jev, snapshot, result.candidates)
-        self.assertTrue(decision.abstained)
-        self.assertIsNone(decision.candidate)
+        with patch("sts2jev.decide.random.choice", lambda items: items[0]):
+            decision = decide_action(jev, snapshot, result.candidates)
+        self.assertFalse(decision.abstained)
+        self.assertEqual(decision.reason, "random")
+        assert decision.candidate is not None
+        self.assertEqual(decision.candidate.id, result.candidates[0].id)
 
     def test_collapse_identical_labels_keeps_first(self) -> None:
         cards = [
@@ -290,21 +498,51 @@ class LoopTests(unittest.TestCase):
         }
         game = FakeGame([intro, done])
         with self.assertRaises(StopPlay) as raised:
-            run_loop(game, ScriptedJev([]), poll_s=0, abstain_sleep_s=0)
+            run_loop(game, ScriptedJev([]), poll_s=0)
         self.assertEqual(raised.exception.reason, "game over complete")
         self.assertEqual(game.acts[0]["action"], "continue_game_over")
 
-    def test_repeated_abstain_stops(self) -> None:
-        game = FakeGame([load_fixture("combat_compact.json")])
-        with self.assertRaises(StopPlay) as raised:
-            run_loop(
-                game,
-                ScriptedJev(["UNKNOWN", "UNKNOWN"]),
-                poll_s=0,
-                abstain_sleep_s=0,
-                max_same_abstain=2,
-            )
-        self.assertIn("repeated abstain", raised.exception.reason)
+    def test_skip_disables_the_claim_that_opened_the_picker(self) -> None:
+        reward = {
+            "available_actions": ["claim_reward", "collect_rewards_and_proceed"],
+            "state": {
+                "screen": "REWARD",
+                "reward": {
+                    "rewards": [
+                        {"i": 0, "line": "Card: Add a card to your deck.", "claimable": True},
+                        {"i": 1, "line": "Gold: 13 Gold", "claimable": True},
+                    ]
+                },
+            },
+        }
+        picker = {
+            "available_actions": ["skip_reward_cards", "choose_reward_card"],
+            "state": {
+                "screen": "REWARD",
+                "reward": {
+                    "pending_card_choice": True,
+                    "cards": [{"i": 0, "name": "Strike"}],
+                },
+            },
+        }
+        paused = {"available_actions": [], "state": {"screen": "PAUSE_MENU"}}
+        game = FakeGame([reward, picker, reward, paused])
+        jev = ScriptedJev(["claim_reward:0", "skip_reward_cards", "claim_reward:1"])
+        with self.assertRaises(StopPlay):
+            run_loop(game, jev, poll_s=0)
+        self.assertNotIn("claim_reward:0", jev.calls[2])
+        self.assertIn("claim_reward:1", jev.calls[2])
+        self.assertEqual(game.acts[2]["option_index"], 1)
+
+    def test_abstain_plays_random_legal_action(self) -> None:
+        snapshot = load_fixture("combat_compact.json")
+        result = expand(snapshot)
+        jev = ScriptedJev(["UNKNOWN"])
+        with patch("sts2jev.decide.random.choice", lambda items: items[-1]):
+            decision = decide_action(jev, snapshot, result.candidates)
+        self.assertEqual(decision.reason, "random")
+        assert decision.candidate is not None
+        self.assertEqual(decision.candidate.id, result.candidates[-1].id)
 
 
 if __name__ == "__main__":

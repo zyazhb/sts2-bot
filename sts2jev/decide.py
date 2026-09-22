@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -53,8 +54,7 @@ def decide_action(
             continue
         picked = _choose_group(client, snapshot, groups)
         if picked.abstained or picked.candidate is None:
-            fallback = _majority_pick(pool)
-            return fallback if fallback is not None else picked
+            return _fallback_pick(pool, "model abstained while choosing an action group")
         pool = groups.get(picked.candidate.id, remaining)
         remaining = collapse_equivalent(pool)
         auto = _auto_pick_equivalent(pool, remaining)
@@ -66,10 +66,33 @@ def decide_action(
         return auto
     result = _one_shot(client, snapshot, remaining)
     if result.abstained:
-        fallback = _majority_pick(pool)
-        if fallback is not None:
-            return fallback
+        return _fallback_pick(pool, "model abstained")
     return result
+
+
+def _fallback_pick(candidates: list[Candidate], why: str) -> ActionDecision:
+    majority = _majority_pick(candidates)
+    if majority is not None:
+        return majority
+    return _random_pick(candidates, why)
+
+
+def _random_pick(candidates: list[Candidate], why: str) -> ActionDecision:
+    if not candidates:
+        return ActionDecision(None, None, True, "no candidates")
+    item = random.choice(candidates)
+    print(f"undecided: {why}; random legal action {item.id} ({item.label})")
+    return ActionDecision(
+        item,
+        ChoiceDecision(
+            value=item.id,
+            probabilities={item.id: 1.0 / len(candidates)},
+            confidence=0.0,
+            abstained=False,
+        ),
+        False,
+        "random",
+    )
 
 
 def _majority_pick(candidates: list[Candidate]) -> ActionDecision | None:
@@ -200,6 +223,7 @@ def _slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[
     if screen == "COMBAT":
         sliced["energy"] = player.get("energy")
         sliced["block"] = player.get("block")
+        sliced["powers"] = _power_lines(player.get("powers"))
         sliced["end_turn_will_kill"] = combat.get("end_turn_will_kill_player")
         sliced["enemies"] = [_enemy_slice(enemy) for enemy in combat.get("enemies") or []]
         sliced["hand"] = [_hand_slice(card) for card in combat.get("hand") or []]
@@ -212,8 +236,13 @@ def _slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[
         sliced["cards"] = shop.get("cards") or []
         sliced["relics"] = shop.get("relics") or []
         sliced["potions"] = shop.get("potions") or []
+        sliced["deck"] = _deck_lines(run)
     elif screen == "REWARD":
         sliced["reward"] = state.get("reward") or {}
+        sliced["deck"] = _deck_lines(run)
+    elif screen == "CARD_SELECTION":
+        sliced["selection"] = state.get("selection") or {}
+        sliced["deck"] = _deck_lines(run)
     elif screen == "EVENT":
         sliced["event"] = state.get("event") or {}
     elif screen == "REST":
@@ -230,12 +259,74 @@ def _hp(entity: dict[str, Any]) -> Any:
 
 
 def _enemy_slice(enemy: dict[str, Any]) -> dict[str, Any]:
+    raw_intents = enemy.get("intents")
+    if not raw_intents and enemy.get("intent"):
+        raw_intents = [enemy.get("intent")]
     return {
         "name": enemy.get("name") or enemy.get("line") or enemy.get("enemy_id"),
         "hp": _hp(enemy),
         "block": enemy.get("block"),
-        "intents": enemy.get("intents") or enemy.get("intent"),
+        "powers": _power_lines(enemy.get("powers")),
+        "intents": [_intent_line(intent) for intent in raw_intents or []],
     }
+
+
+def _power_lines(powers: Any) -> list[str]:
+    lines: list[str] = []
+    for power in powers or []:
+        if isinstance(power, str):
+            lines.append(power)
+            continue
+        if not isinstance(power, dict):
+            continue
+        line = power.get("line")
+        if line not in (None, ""):
+            lines.append(str(line))
+            continue
+        name = str(power.get("name") or power.get("power_id") or "?")
+        amount = power.get("amount")
+        text = f"{name} {amount}" if amount is not None else name
+        if power.get("is_debuff"):
+            text = f"{text} [debuff]"
+        lines.append(text)
+    return lines
+
+
+def _intent_line(intent: Any) -> str:
+    if not isinstance(intent, dict):
+        return str(intent)
+    kind = str(intent.get("intent_type") or intent.get("label") or "intent")
+    bits: list[str] = []
+    if intent.get("total_damage") is not None:
+        hits = intent.get("hits")
+        damage = intent.get("damage")
+        if hits not in (None, 1) and damage is not None:
+            bits.append(f"{damage}x{hits}")
+        bits.append(f"{intent['total_damage']} dmg")
+    elif intent.get("label"):
+        bits.append(str(intent["label"]))
+    if intent.get("status_card_count") is not None:
+        bits.append(f"{intent['status_card_count']} status")
+    return f"{kind} ({', '.join(bits)})" if bits else kind
+
+
+def _deck_lines(run: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for card in run.get("deck") or []:
+        if isinstance(card, str):
+            lines.append(card)
+            continue
+        if not isinstance(card, dict):
+            continue
+        line = card.get("line")
+        if line not in (None, ""):
+            lines.append(str(line))
+            continue
+        name = str(card.get("name") or card.get("card_id") or "?")
+        if card.get("upgraded"):
+            name = f"{name}+"
+        lines.append(name)
+    return lines
 
 
 def _hand_slice(card: dict[str, Any]) -> dict[str, Any]:
@@ -254,7 +345,10 @@ def _criteria(snapshot: dict[str, Any]) -> str:
             "Spend energy on playable cards. Prioritize lethal or high incoming intent damage. "
             "Do not end the turn with unused efficient plays. Avoid ending the turn if it kills the player."
         ),
-        "REWARD": "Take cards only when the upgrade is clear; otherwise skip. Prefer relics and potions that fit the deck.",
+        "REWARD": (
+            "Compare offered cards with the current deck. Take a card that clearly improves it; otherwise skip. "
+            "Prefer relics and potions that fit the deck."
+        ),
         "SHOP": "Check relics and card removal before spending gold. Buy only affordable stocked items that clearly help.",
         "EVENT": "Prefer unlocked options. Avoid options marked KILLS unless no alternative remains.",
         "MAP": "Pick a node that advances the run. Prefer rest when wounded, shops when gold is high, elites when strong.",

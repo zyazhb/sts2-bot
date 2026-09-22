@@ -111,7 +111,11 @@ def action_names(snapshot: dict[str, Any]) -> list[str]:
     return names
 
 
-def expand(snapshot: dict[str, Any]) -> ExpandResult:
+def expand(
+    snapshot: dict[str, Any],
+    *,
+    blocked_ids: frozenset[str] = frozenset(),
+) -> ExpandResult:
     from sts2jev.expanders import EXPANDERS, crystal_cells, expand_crystal_cells
 
     state = snapshot.get("state") or {}
@@ -122,6 +126,7 @@ def expand(snapshot: dict[str, Any]) -> ExpandResult:
     names = [name for name in action_names(snapshot) if name not in REJECTED_ACTIONS]
     if screen in {"MAIN_MENU", "PATCH_NOTES"}:
         names = [name for name in names if name in MAIN_MENU_ACTIONS]
+    names = _reward_action_names(state, names)
 
     candidates: list[Candidate] = []
     for name in names:
@@ -142,7 +147,21 @@ def expand(snapshot: dict[str, Any]) -> ExpandResult:
             continue
         if name in ZERO_ARG_ACTIONS:
             candidates.append(zero_arg(name))
+    if blocked_ids:
+        candidates = [item for item in candidates if item.id not in blocked_ids]
     return ExpandResult(candidates=candidates)
+
+
+def _reward_action_names(state: dict[str, Any], names: list[str]) -> list[str]:
+    reward = state.get("reward") or {}
+    picking_card = bool(
+        reward.get("pending_card_choice") or reward.get("cards") or reward.get("card_options")
+    )
+    if picking_card:
+        blocked = {"claim_reward", "collect_rewards_and_proceed"}
+    else:
+        blocked = {"skip_reward_cards", "choose_reward_card"}
+    return [name for name in names if name not in blocked]
 
 
 def item_index(item: dict[str, Any], fallback: int | None = None) -> int:

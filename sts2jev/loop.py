@@ -26,13 +26,11 @@ def run_loop(
     jev: OpenJevProClient,
     *,
     poll_s: float = 0.4,
-    abstain_sleep_s: float = 1.0,
-    max_same_abstain: int = 2,
 ) -> None:
     health = game.connect()
     print(f"connected sts2-ai-agent port={health.get('api_port')} role={health.get('instance_role')}")
-    last_fingerprint: tuple[Any, ...] | None = None
-    same_abstain = 0
+    blocked_ids: set[str] = set()
+    opened_claim: str | None = None
 
     while True:
         snapshot = game.snapshot()
@@ -40,6 +38,9 @@ def run_loop(
         screen = state.get("screen")
         if screen in PAUSE_SCREENS:
             raise StopPlay(f"paused on {screen}")
+        if screen != "REWARD":
+            blocked_ids.clear()
+            opened_claim = None
 
         if _should_wait_combat(state):
             time.sleep(poll_s)
@@ -54,7 +55,7 @@ def run_loop(
             time.sleep(poll_s)
             continue
 
-        expanded = expand(snapshot)
+        expanded = expand(snapshot, blocked_ids=frozenset(blocked_ids))
         if expanded.stop_reason:
             raise StopPlay(expanded.stop_reason, candidates=expanded.candidates)
         if screen == "GAME_OVER":
@@ -64,22 +65,25 @@ def run_loop(
             raise StopPlay(f"no legal candidates on {screen}")
 
         decision = decide_action(jev, snapshot, expanded.candidates)
-        fingerprint = _fingerprint(state, expanded.candidates)
-        if decision.abstained:
-            same_abstain = same_abstain + 1 if fingerprint == last_fingerprint else 1
-            last_fingerprint = fingerprint
-            print(f"abstain screen={screen} count={same_abstain}")
-            if same_abstain >= max_same_abstain:
-                for item in expanded.candidates:
-                    print(f"  {item.id}: {item.label}")
-                raise StopPlay("repeated abstain on the same snapshot", candidates=expanded.candidates)
-            time.sleep(abstain_sleep_s)
-            continue
-        same_abstain = 0
-        last_fingerprint = fingerprint
+        if decision.abstained or decision.candidate is None:
+            raise StopPlay(f"no legal candidates on {screen}", candidates=expanded.candidates)
         outcome = _submit(game, decision, poll_s=poll_s)
+        if outcome == "ok" and decision.candidate is not None:
+            opened_claim = _note_reward_choice(decision.candidate, blocked_ids, opened_claim)
         if outcome == "stale":
             continue
+
+
+def _note_reward_choice(
+    candidate: Candidate,
+    blocked_ids: set[str],
+    opened_claim: str | None,
+) -> str | None:
+    if candidate.action == "claim_reward":
+        return candidate.id
+    if candidate.action == "skip_reward_cards" and opened_claim:
+        blocked_ids.add(opened_claim)
+    return None
 
 
 def _should_wait_combat(state: dict[str, Any]) -> bool:
@@ -175,13 +179,4 @@ def _correct_once(candidate: Candidate, details: dict[str, Any]) -> Candidate | 
         body=body,
         index_key=candidate.index_key,
         target_key=candidate.target_key,
-    )
-
-
-def _fingerprint(state: dict[str, Any], candidates: list[Candidate]) -> tuple[Any, ...]:
-    return (
-        state.get("run_id"),
-        state.get("screen"),
-        state.get("turn"),
-        tuple(item.id for item in candidates),
     )

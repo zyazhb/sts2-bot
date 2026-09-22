@@ -284,27 +284,77 @@ def _crystal_tools(_state: dict[str, Any]) -> list[Candidate]:
     ]
 
 
+def _potion_slots_full(state: dict[str, Any]) -> bool:
+    potions = (state.get("run") or {}).get("potions")
+    if not isinstance(potions, list) or not potions:
+        return False
+    slots = [item for item in potions if isinstance(item, dict)]
+    if not slots:
+        return False
+    return all(_slot_occupied(item) for item in slots)
+
+
+def _slot_occupied(item: dict[str, Any]) -> bool:
+    if "occupied" in item and item["occupied"] is not None:
+        return bool(item["occupied"])
+    return bool(item.get("potion_id") or item.get("name"))
+
+
+def _is_potion_reward(item: dict[str, Any]) -> bool:
+    kind = str(item.get("reward_type") or item.get("type") or "").casefold()
+    if kind == "potion":
+        return True
+    text = str(item.get("description") or item.get("line") or "").casefold()
+    return text.startswith("potion:")
+
+
+def _select_deck_cards(state: dict[str, Any]) -> list[Candidate]:
+    selection = state.get("selection") or {}
+    selected = selection.get("selected")
+    if selected is None:
+        selected = selection.get("selected_count")
+    maximum = selection.get("max")
+    if maximum is None:
+        maximum = selection.get("max_select")
+    if selected is not None and maximum is not None and int(selected) >= int(maximum):
+        return []
+    return indexed(
+        "select_deck_card",
+        selection.get("cards") or [],
+        label_keys=("name", "line", "card_id"),
+        include=lambda item: not flag(item, "selected"),
+    )
+
+
+def _claim_rewards(state: dict[str, Any]) -> list[Candidate]:
+    belt_full = _potion_slots_full(state)
+    return indexed(
+        "claim_reward",
+        (state.get("reward") or {}).get("rewards") or [],
+        label_keys=("description", "line", "reward_type"),
+        include=lambda item: flag(item, "claimable", default=True)
+        and not (belt_full and _is_potion_reward(item)),
+    )
+
+
+def _buy_potion(state: dict[str, Any]) -> list[Candidate]:
+    if _potion_slots_full(state):
+        return []
+    return _shop_items(state, "buy_potion", "potions")
+
+
 EXPANDERS: dict[str, Callable[[dict[str, Any]], list[Candidate]]] = {
     "play_card": _play_card,
     "use_potion": lambda state: _potion_action(state, "use_potion", ("usable", "can_use")),
     "discard_potion": lambda state: _potion_action(state, "discard_potion", ("discard", "can_discard")),
     "choose_map_node": _map_nodes,
-    "claim_reward": lambda state: indexed(
-        "claim_reward",
-        (state.get("reward") or {}).get("rewards") or [],
-        label_keys=("description", "line", "reward_type"),
-        include=lambda item: flag(item, "claimable", default=True),
-    ),
+    "claim_reward": _claim_rewards,
     "choose_reward_card": lambda state: indexed(
         "choose_reward_card",
         (state.get("reward") or {}).get("cards") or (state.get("reward") or {}).get("card_options") or [],
         label_keys=("name", "line", "card_id"),
     ),
-    "select_deck_card": lambda state: indexed(
-        "select_deck_card",
-        (state.get("selection") or {}).get("cards") or [],
-        label_keys=("name", "line", "card_id"),
-    ),
+    "select_deck_card": _select_deck_cards,
     "choose_treasure_relic": lambda state: indexed(
         "choose_treasure_relic",
         (state.get("chest") or {}).get("relics") or (state.get("chest") or {}).get("relic_options") or [],
@@ -314,7 +364,7 @@ EXPANDERS: dict[str, Callable[[dict[str, Any]], list[Candidate]]] = {
     "choose_rest_option": _rest_options,
     "buy_card": lambda state: _shop_items(state, "buy_card", "cards"),
     "buy_relic": lambda state: _shop_items(state, "buy_relic", "relics"),
-    "buy_potion": lambda state: _shop_items(state, "buy_potion", "potions"),
+    "buy_potion": _buy_potion,
     "choose_bundle": lambda state: indexed(
         "choose_bundle",
         state.get("bundles") or [],
