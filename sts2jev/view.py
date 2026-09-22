@@ -43,9 +43,11 @@ def slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[s
         shop = state.get("shop") or {}
         sliced["shop_open"] = shop.get("open", shop.get("is_open"))
         sliced["cards"] = shop.get("cards") or []
-        sliced["relics"] = shop.get("relics") or []
-        sliced["potions"] = shop.get("potions") or []
+        sliced["relics_for_sale"] = shop.get("relics") or []
+        sliced["potions_for_sale"] = shop.get("potions") or []
+        sliced["removal"] = shop.get("card_removal") or shop.get("removal")
         sliced["deck"] = _deck_lines(run)
+        sliced["owned_relics"] = _relic_lines(run)
     elif screen == "REWARD":
         sliced["reward"] = state.get("reward") or {}
         sliced["deck"] = _deck_lines(run)
@@ -114,12 +116,17 @@ def _power_text(power: Any, catalog: dict[str, str]) -> str:
     name = str(power.get("name") or "")
     amount = power.get("amount")
     debuff = bool(power.get("is_debuff"))
+    line = str(power.get("line") or "")
+    ident, line_amount, line_debuff = _split_power_token(line) if line else ("", None, False)
+    if amount is None:
+        amount = line_amount
+    debuff = debuff or line_debuff
     own = power.get("description")
     if own not in (None, ""):
-        label = name or power_id or "?"
+        label = name or power_id or ident or "?"
         described = f"{label}: {_plain(str(own))}"
     else:
-        described = _lookup_power(catalog, power_id, name, str(power.get("line") or ""))
+        described = _lookup_power(catalog, power_id, name, ident)
     if described:
         return _with_amount(described, amount, debuff)
     label = name or power_id or str(power.get("line") or "?")

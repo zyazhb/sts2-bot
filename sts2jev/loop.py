@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from openjevpro.client import OpenJevProClient
+from openjevpro.schemas import ChoiceDecision
 
 from sts2jev.candidates import Candidate, ExpandResult, PAUSE_SCREENS, expand
 from sts2jev.decide import ActionDecision, decide_action
@@ -31,6 +32,7 @@ def run_loop(
     print(f"connected sts2-ai-agent port={health.get('api_port')} role={health.get('instance_role')}")
     blocked_ids: set[str] = set()
     opened_claim: str | None = None
+    shop_opened = False
 
     while True:
         snapshot = game.snapshot()
@@ -41,6 +43,10 @@ def run_loop(
         if screen != "REWARD":
             blocked_ids.clear()
             opened_claim = None
+        if screen != "SHOP":
+            shop_opened = False
+        elif (state.get("shop") or {}).get("open") or (state.get("shop") or {}).get("is_open"):
+            shop_opened = True
 
         if _should_wait_combat(state):
             time.sleep(poll_s)
@@ -55,7 +61,10 @@ def run_loop(
             time.sleep(poll_s)
             continue
 
-        expanded = expand(snapshot, blocked_ids=frozenset(blocked_ids))
+        blocked = set(blocked_ids)
+        if screen == "SHOP" and not shop_opened and _action_available(snapshot, "open_shop_inventory"):
+            blocked.add("proceed")
+        expanded = expand(snapshot, blocked_ids=frozenset(blocked))
         if expanded.stop_reason:
             raise StopPlay(expanded.stop_reason, candidates=expanded.candidates)
         if screen == "GAME_OVER":
@@ -64,12 +73,14 @@ def run_loop(
         if not expanded.candidates:
             raise StopPlay(f"no legal candidates on {screen}")
 
-        prompt = snapshot
-        if screen == "COMBAT":
-            catalog = game.power_catalog() if hasattr(game, "power_catalog") else {}
-            if catalog:
-                prompt = {**snapshot, "power_catalog": catalog}
-        decision = decide_action(jev, prompt, expanded.candidates)
+        decision = _end_turn_if_no_play(expanded.candidates)
+        if decision is None:
+            prompt = snapshot
+            if screen == "COMBAT":
+                catalog = game.power_catalog() if hasattr(game, "power_catalog") else {}
+                if catalog:
+                    prompt = {**snapshot, "power_catalog": catalog}
+            decision = decide_action(jev, prompt, expanded.candidates)
         if decision.abstained or decision.candidate is None:
             raise StopPlay(f"no legal candidates on {screen}", candidates=expanded.candidates)
         outcome = _submit(game, decision, poll_s=poll_s)
@@ -77,6 +88,26 @@ def run_loop(
             opened_claim = _note_reward_choice(decision.candidate, blocked_ids, opened_claim)
         if outcome == "stale":
             continue
+
+
+def _end_turn_if_no_play(candidates: list[Candidate]) -> ActionDecision | None:
+    """Skip the model when the only legal combat action is ending the turn."""
+    ending = next((item for item in candidates if item.action == "end_turn"), None)
+    if ending is None or any(item.action != "end_turn" for item in candidates):
+        return None
+    return ActionDecision(
+        ending,
+        ChoiceDecision(value=ending.id, probabilities={ending.id: 1.0}, confidence=1.0),
+        False,
+        "no playable card",
+    )
+
+
+def _action_available(snapshot: dict[str, Any], name: str) -> bool:
+    for item in snapshot.get("available_actions") or []:
+        if item == name or (isinstance(item, dict) and item.get("name") == name):
+            return True
+    return name in ((snapshot.get("state") or {}).get("available_actions") or [])
 
 
 def _note_reward_choice(

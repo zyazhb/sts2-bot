@@ -214,14 +214,18 @@ def _criteria(snapshot: dict[str, Any]) -> str:
         "COMBAT": (
             "Finish the fight with as much HP left as possible. "
             "Spend energy to block or remove the damage coming this turn. "
-            "Read each power description before choosing a target; on-death, stun, and strength effects change who to kill. "
+            "Read each power description before choosing a target. "
+            "Do not attack Thorns or Reflect unless the HP lost is less than letting that enemy act. "
             "Play toward a stronger deck and clearing the run."
         ),
         "REWARD": (
             "Compare offered cards with the current deck. Take a card that clearly improves it; otherwise skip. "
             "Prefer relics and potions that fit the deck."
         ),
-        "SHOP": "Check relics and card removal before spending gold. Buy only affordable stocked items that clearly help.",
+        "SHOP": (
+            "Compare the cards, relics, potions, and card removal with this deck and gold. "
+            "Buy what clearly strengthens the deck. Leave only after that comparison."
+        ),
         "EVENT": "Prefer unlocked options. Avoid options marked KILLS unless no alternative remains.",
         "MAP": (
             "Choose the next node from this character's deck, relics, potions, HP, and gold. "

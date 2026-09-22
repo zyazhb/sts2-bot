@@ -226,6 +226,33 @@ class ExpandTests(unittest.TestCase):
         self.assertIn("eats it", power)
         self.assertIn("Stunned", power)
 
+    def test_power_line_resolves_thorns_description(self) -> None:
+        sliced = _slice_state(
+            {
+                "power_catalog": {
+                    "THORNS_POWER": "Thorns: When hit by an attack, deal damage back.",
+                },
+                "state": {
+                    "screen": "COMBAT",
+                    "combat": {
+                        "player": {"hp": "70/80", "energy": 3, "block": 0},
+                        "enemies": [
+                            {
+                                "name": "Toadpole",
+                                "hp": "25/25",
+                                "powers": [{"line": "THORNS_POWER 3"}],
+                                "intents": [{"intent_type": "Attack", "total_damage": 8}],
+                            }
+                        ],
+                        "hand": [],
+                    },
+                },
+            },
+            [],
+        )
+        power = sliced["enemies"][0]["powers"][0]
+        self.assertEqual(power, "Thorns 3: When hit by an attack, deal damage back.")
+
     def test_map_choice_includes_character(self) -> None:
         sliced = _slice_state(
             {
@@ -567,6 +594,40 @@ class LoopTests(unittest.TestCase):
             run_loop(game, ScriptedJev([]), poll_s=0)
         self.assertEqual(raised.exception.reason, "game over complete")
         self.assertEqual(game.acts[0]["action"], "continue_game_over")
+
+    def test_no_playable_card_ends_turn_without_model(self) -> None:
+        combat = {
+            "available_actions": ["play_card", "end_turn"],
+            "state": {
+                "screen": "COMBAT",
+                "combat": {
+                    "action_readiness": {"can_use_combat_actions": True},
+                    "player": {"hp": "40/80", "energy": 0},
+                    "hand": [{"i": 0, "name": "Strike", "energy_cost": 1, "playable": False, "target": "None"}],
+                    "enemies": [{"i": 0, "name": "Slime", "hp": "10/10", "alive": True}],
+                },
+            },
+        }
+        paused = {"available_actions": [], "state": {"screen": "PAUSE_MENU"}}
+        game = FakeGame([combat, paused])
+        jev = ScriptedJev([])
+        with self.assertRaises(StopPlay):
+            run_loop(game, jev, poll_s=0)
+        self.assertEqual(jev.calls, [])
+        self.assertEqual(game.acts[0]["action"], "end_turn")
+
+    def test_closed_shop_must_open_before_proceed(self) -> None:
+        shop = {
+            "available_actions": ["open_shop_inventory", "proceed"],
+            "state": {"screen": "SHOP", "shop": {"open": False}},
+        }
+        paused = {"available_actions": [], "state": {"screen": "PAUSE_MENU"}}
+        game = FakeGame([shop, paused])
+        jev = ScriptedJev(["open_shop_inventory"])
+        with self.assertRaises(StopPlay):
+            run_loop(game, jev, poll_s=0)
+        self.assertEqual(jev.calls[0], ["open_shop_inventory"])
+        self.assertEqual(game.acts[0]["action"], "open_shop_inventory")
 
     def test_skip_disables_the_claim_that_opened_the_picker(self) -> None:
         reward = {
