@@ -35,6 +35,7 @@ class Sts2Client:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
+        self._power_catalog: dict[str, str] | None = None
 
     def connect(self) -> dict[str, Any]:
         """Confirm the mod is up and switch to the advertised api_port."""
@@ -72,6 +73,23 @@ class Sts2Client:
 
     def act(self, body: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         return self._request("POST", "/action", json_body=body, timeout=timeout or 60.0)
+
+    def power_catalog(self) -> dict[str, str]:
+        """id and name to plain-text effect. Loaded once from GET /data/powers."""
+        if self._power_catalog is not None:
+            return self._power_catalog
+        from sts2jev.view import power_catalog_from_items
+
+        try:
+            resp = self.session.get(f"{self.base_url}/data/powers", timeout=self.timeout)
+            payload = resp.json()
+        except (requests.RequestException, ValueError):
+            return {}
+        items = payload if isinstance(payload, list) else payload.get("data", payload)
+        if not isinstance(items, list) or not items:
+            return {}
+        self._power_catalog = power_catalog_from_items(items)
+        return self._power_catalog
 
     def _get(self, path: str) -> dict[str, Any]:
         return self._request("GET", path)

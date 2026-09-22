@@ -192,6 +192,40 @@ class ExpandTests(unittest.TestCase):
         self.assertEqual(enemy["powers"], ["RITUAL 3"])
         self.assertEqual(enemy["intents"], ["Attack (6x2, 12 dmg)"])
 
+    def test_enemy_power_includes_effect_text(self) -> None:
+        sliced = _slice_state(
+            {
+                "power_catalog": {
+                    "RAVENOUS_POWER": (
+                        "Ravenous: When an enemy dies, Corpse Slug immediately eats it, "
+                        "becoming Stunned and gaining 1 Strength."
+                    )
+                },
+                "state": {
+                    "screen": "COMBAT",
+                    "combat": {
+                        "player": {"hp": "70/80", "energy": 3, "block": 0},
+                        "enemies": [
+                            {
+                                "name": "Corpse Slug",
+                                "hp": "4/28",
+                                "powers": [{"power_id": "RAVENOUS_POWER", "amount": 5}],
+                                "intents": [
+                                    {"intent_type": "Attack", "damage": 3, "hits": 2, "total_damage": 6}
+                                ],
+                            }
+                        ],
+                        "hand": [],
+                    },
+                },
+            },
+            [],
+        )
+        power = sliced["enemies"][0]["powers"][0]
+        self.assertIn("Ravenous 5:", power)
+        self.assertIn("eats it", power)
+        self.assertIn("Stunned", power)
+
     def test_map_choice_includes_character(self) -> None:
         sliced = _slice_state(
             {

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sts2jev.candidates import Candidate
+
+_MARKUP = re.compile(r"\[/?[a-zA-Z]+\]")
 
 
 def slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[str, Any]:
@@ -20,12 +23,13 @@ def slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[s
         "gold": run.get("gold"),
         "options": {item.id: item.label for item in candidates},
     }
+    catalog = snapshot.get("power_catalog") or {}
     if screen == "COMBAT":
         sliced["energy"] = player.get("energy")
         sliced["block"] = player.get("block")
-        sliced["powers"] = _power_lines(player.get("powers"))
+        sliced["powers"] = _power_lines(player.get("powers"), catalog)
         sliced["end_turn_will_kill"] = combat.get("end_turn_will_kill_player")
-        sliced["enemies"] = [_enemy_slice(enemy) for enemy in combat.get("enemies") or []]
+        sliced["enemies"] = [_enemy_slice(enemy, catalog) for enemy in combat.get("enemies") or []]
         sliced["hand"] = [_hand_slice(card) for card in combat.get("hand") or []]
     elif screen == "MAP":
         mapping = state.get("map") or {}
@@ -63,7 +67,23 @@ def _hp(entity: dict[str, Any]) -> Any:
     return None
 
 
-def _enemy_slice(enemy: dict[str, Any]) -> dict[str, Any]:
+def power_catalog_from_items(items: list[Any]) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        power_id = str(item.get("id") or "")
+        name = str(item.get("name") or power_id)
+        description = _plain(str(item.get("description") or ""))
+        text = f"{name}: {description}" if description else name
+        if power_id:
+            catalog[power_id] = text
+        if name:
+            catalog[name.casefold()] = text
+    return catalog
+
+
+def _enemy_slice(enemy: dict[str, Any], catalog: dict[str, str] | None = None) -> dict[str, Any]:
     raw_intents = enemy.get("intents")
     if not raw_intents and enemy.get("intent"):
         raw_intents = [enemy.get("intent")]
@@ -71,30 +91,78 @@ def _enemy_slice(enemy: dict[str, Any]) -> dict[str, Any]:
         "name": enemy.get("name") or enemy.get("line") or enemy.get("enemy_id"),
         "hp": _hp(enemy),
         "block": enemy.get("block"),
-        "powers": _power_lines(enemy.get("powers")),
+        "powers": _power_lines(enemy.get("powers"), catalog),
         "intents": [_intent_line(intent) for intent in raw_intents or []],
     }
 
 
-def _power_lines(powers: Any) -> list[str]:
-    lines: list[str] = []
-    for power in powers or []:
-        if isinstance(power, str):
-            lines.append(power)
+def _power_lines(powers: Any, catalog: dict[str, str] | None = None) -> list[str]:
+    known = catalog or {}
+    return [_power_text(power, known) for power in powers or []]
+
+
+def _power_text(power: Any, catalog: dict[str, str]) -> str:
+    if isinstance(power, str):
+        ident, amount, debuff = _split_power_token(power)
+        described = _lookup_power(catalog, ident)
+        if not described:
+            return power
+        return _with_amount(described, amount, debuff)
+    if not isinstance(power, dict):
+        return str(power)
+    power_id = str(power.get("power_id") or power.get("id") or "")
+    name = str(power.get("name") or "")
+    amount = power.get("amount")
+    debuff = bool(power.get("is_debuff"))
+    own = power.get("description")
+    if own not in (None, ""):
+        label = name or power_id or "?"
+        described = f"{label}: {_plain(str(own))}"
+    else:
+        described = _lookup_power(catalog, power_id, name, str(power.get("line") or ""))
+    if described:
+        return _with_amount(described, amount, debuff)
+    label = name or power_id or str(power.get("line") or "?")
+    text = f"{label} {amount}" if amount is not None else label
+    if debuff:
+        text = f"{text} [debuff]"
+    return text
+
+
+def _lookup_power(catalog: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        if not key:
             continue
-        if not isinstance(power, dict):
-            continue
-        line = power.get("line")
-        if line not in (None, ""):
-            lines.append(str(line))
-            continue
-        name = str(power.get("name") or power.get("power_id") or "?")
-        amount = power.get("amount")
-        text = f"{name} {amount}" if amount is not None else name
-        if power.get("is_debuff"):
-            text = f"{text} [debuff]"
-        lines.append(text)
-    return lines
+        found = catalog.get(key) or catalog.get(key.casefold())
+        if found:
+            return found
+    return ""
+
+
+def _with_amount(described: str, amount: Any, debuff: bool) -> str:
+    text = described
+    if amount is not None:
+        head, sep, tail = described.partition(":")
+        if sep and str(amount) not in head.split():
+            text = f"{head} {amount}:{tail}"
+        elif not sep:
+            text = f"{described} {amount}"
+    if debuff and "[debuff]" not in text:
+        text = f"{text} [debuff]"
+    return text
+
+
+def _split_power_token(text: str) -> tuple[str, str | None, bool]:
+    debuff = "[debuff]" in text.casefold()
+    cleaned = text.replace("[debuff]", "").replace("[Debuff]", "").strip()
+    parts = cleaned.split()
+    amount = parts[-1] if parts and parts[-1].lstrip("-").isdigit() else None
+    ident = " ".join(parts[:-1]) if amount else cleaned
+    return ident, amount, debuff
+
+
+def _plain(text: str) -> str:
+    return _MARKUP.sub("", text).strip()
 
 
 def _intent_line(intent: Any) -> str:

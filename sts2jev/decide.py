@@ -212,8 +212,10 @@ def _criteria(snapshot: dict[str, Any]) -> str:
     screen = (snapshot.get("state") or {}).get("screen")
     rules = {
         "COMBAT": (
-            "Spend energy on playable cards. Prioritize lethal or high incoming intent damage. "
-            "Do not end the turn with unused efficient plays. Avoid ending the turn if it kills the player."
+            "Finish the fight with as much HP left as possible. "
+            "Spend energy to block or remove the damage coming this turn. "
+            "Read each power description before choosing a target; on-death, stun, and strength effects change who to kill. "
+            "Play toward a stronger deck and clearing the run."
         ),
         "REWARD": (
             "Compare offered cards with the current deck. Take a card that clearly improves it; otherwise skip. "

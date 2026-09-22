@@ -64,7 +64,12 @@ def run_loop(
         if not expanded.candidates:
             raise StopPlay(f"no legal candidates on {screen}")
 
-        decision = decide_action(jev, snapshot, expanded.candidates)
+        prompt = snapshot
+        if screen == "COMBAT":
+            catalog = game.power_catalog() if hasattr(game, "power_catalog") else {}
+            if catalog:
+                prompt = {**snapshot, "power_catalog": catalog}
+        decision = decide_action(jev, prompt, expanded.candidates)
         if decision.abstained or decision.candidate is None:
             raise StopPlay(f"no legal candidates on {screen}", candidates=expanded.candidates)
         outcome = _submit(game, decision, poll_s=poll_s)
