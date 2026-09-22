@@ -10,6 +10,7 @@ from openjevpro.client import OpenJevProClient
 from openjevpro.schemas import ChoiceDecision
 
 from sts2jev.candidates import Candidate
+from sts2jev.view import slice_state as _slice_state
 
 LETTER_LIMIT = 26
 
@@ -207,137 +208,6 @@ def _one_shot(
     return ActionDecision(selected, choice, False)
 
 
-def _slice_state(snapshot: dict[str, Any], candidates: list[Candidate]) -> dict[str, Any]:
-    state = snapshot.get("state") or {}
-    screen = state.get("screen")
-    combat = state.get("combat") or {}
-    player = combat.get("player") or {}
-    run = state.get("run") or {}
-    sliced: dict[str, Any] = {
-        "screen": screen,
-        "run_id": state.get("run_id"),
-        "hp": _hp(player) or _hp(run),
-        "gold": run.get("gold"),
-        "options": {item.id: item.label for item in candidates},
-    }
-    if screen == "COMBAT":
-        sliced["energy"] = player.get("energy")
-        sliced["block"] = player.get("block")
-        sliced["powers"] = _power_lines(player.get("powers"))
-        sliced["end_turn_will_kill"] = combat.get("end_turn_will_kill_player")
-        sliced["enemies"] = [_enemy_slice(enemy) for enemy in combat.get("enemies") or []]
-        sliced["hand"] = [_hand_slice(card) for card in combat.get("hand") or []]
-    elif screen == "MAP":
-        mapping = state.get("map") or {}
-        sliced["nodes"] = mapping.get("options") or mapping.get("available_nodes") or []
-    elif screen == "SHOP":
-        shop = state.get("shop") or {}
-        sliced["shop_open"] = shop.get("open", shop.get("is_open"))
-        sliced["cards"] = shop.get("cards") or []
-        sliced["relics"] = shop.get("relics") or []
-        sliced["potions"] = shop.get("potions") or []
-        sliced["deck"] = _deck_lines(run)
-    elif screen == "REWARD":
-        sliced["reward"] = state.get("reward") or {}
-        sliced["deck"] = _deck_lines(run)
-    elif screen == "CARD_SELECTION":
-        sliced["selection"] = state.get("selection") or {}
-        sliced["deck"] = _deck_lines(run)
-    elif screen == "EVENT":
-        sliced["event"] = state.get("event") or {}
-    elif screen == "REST":
-        sliced["rest"] = state.get("rest") or {}
-    return sliced
-
-
-def _hp(entity: dict[str, Any]) -> Any:
-    if entity.get("hp") is not None:
-        return entity["hp"]
-    if entity.get("current_hp") is not None:
-        return f"{entity.get('current_hp')}/{entity.get('max_hp')}"
-    return None
-
-
-def _enemy_slice(enemy: dict[str, Any]) -> dict[str, Any]:
-    raw_intents = enemy.get("intents")
-    if not raw_intents and enemy.get("intent"):
-        raw_intents = [enemy.get("intent")]
-    return {
-        "name": enemy.get("name") or enemy.get("line") or enemy.get("enemy_id"),
-        "hp": _hp(enemy),
-        "block": enemy.get("block"),
-        "powers": _power_lines(enemy.get("powers")),
-        "intents": [_intent_line(intent) for intent in raw_intents or []],
-    }
-
-
-def _power_lines(powers: Any) -> list[str]:
-    lines: list[str] = []
-    for power in powers or []:
-        if isinstance(power, str):
-            lines.append(power)
-            continue
-        if not isinstance(power, dict):
-            continue
-        line = power.get("line")
-        if line not in (None, ""):
-            lines.append(str(line))
-            continue
-        name = str(power.get("name") or power.get("power_id") or "?")
-        amount = power.get("amount")
-        text = f"{name} {amount}" if amount is not None else name
-        if power.get("is_debuff"):
-            text = f"{text} [debuff]"
-        lines.append(text)
-    return lines
-
-
-def _intent_line(intent: Any) -> str:
-    if not isinstance(intent, dict):
-        return str(intent)
-    kind = str(intent.get("intent_type") or intent.get("label") or "intent")
-    bits: list[str] = []
-    if intent.get("total_damage") is not None:
-        hits = intent.get("hits")
-        damage = intent.get("damage")
-        if hits not in (None, 1) and damage is not None:
-            bits.append(f"{damage}x{hits}")
-        bits.append(f"{intent['total_damage']} dmg")
-    elif intent.get("label"):
-        bits.append(str(intent["label"]))
-    if intent.get("status_card_count") is not None:
-        bits.append(f"{intent['status_card_count']} status")
-    return f"{kind} ({', '.join(bits)})" if bits else kind
-
-
-def _deck_lines(run: dict[str, Any]) -> list[str]:
-    lines: list[str] = []
-    for card in run.get("deck") or []:
-        if isinstance(card, str):
-            lines.append(card)
-            continue
-        if not isinstance(card, dict):
-            continue
-        line = card.get("line")
-        if line not in (None, ""):
-            lines.append(str(line))
-            continue
-        name = str(card.get("name") or card.get("card_id") or "?")
-        if card.get("upgraded"):
-            name = f"{name}+"
-        lines.append(name)
-    return lines
-
-
-def _hand_slice(card: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": card.get("name") or card.get("line") or card.get("card_id"),
-        "energy_cost": card.get("energy_cost"),
-        "playable": card.get("playable"),
-        "requires_target": card.get("requires_target"),
-    }
-
-
 def _criteria(snapshot: dict[str, Any]) -> str:
     screen = (snapshot.get("state") or {}).get("screen")
     rules = {
@@ -351,7 +221,10 @@ def _criteria(snapshot: dict[str, Any]) -> str:
         ),
         "SHOP": "Check relics and card removal before spending gold. Buy only affordable stocked items that clearly help.",
         "EVENT": "Prefer unlocked options. Avoid options marked KILLS unless no alternative remains.",
-        "MAP": "Pick a node that advances the run. Prefer rest when wounded, shops when gold is high, elites when strong.",
+        "MAP": (
+            "Choose the next node from this character's deck, relics, potions, HP, and gold. "
+            "Prefer rest when wounded, a shop when gold can buy something useful, and an elite when the deck is strong."
+        ),
         "REST": "Heal when missing substantial HP; smith when HP is comfortable.",
         "CHEST": "Take the relic that best fits the current deck.",
         "CARD_SELECTION": "Pick the card that the prompt is asking to remove, upgrade, or transform.",

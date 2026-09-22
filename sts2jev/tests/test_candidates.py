@@ -11,7 +11,8 @@ from unittest.mock import patch
 from openjevpro.schemas import ChoiceDecision
 
 from sts2jev.candidates import Candidate, expand
-from sts2jev.decide import _slice_state, collapse_equivalent, decide_action, group_by_action, group_by_index
+from sts2jev.decide import collapse_equivalent, decide_action, group_by_action, group_by_index
+from sts2jev.view import slice_state as _slice_state
 from sts2jev.loop import StopPlay, _correct_once, _should_wait_combat, run_loop
 
 
@@ -190,6 +191,37 @@ class ExpandTests(unittest.TestCase):
         self.assertEqual(enemy["hp"], "48/50")
         self.assertEqual(enemy["powers"], ["RITUAL 3"])
         self.assertEqual(enemy["intents"], ["Attack (6x2, 12 dmg)"])
+
+    def test_map_choice_includes_character(self) -> None:
+        sliced = _slice_state(
+            {
+                "state": {
+                    "screen": "MAP",
+                    "run": {
+                        "character": "Ironclad",
+                        "floor": 3,
+                        "current_hp": 62,
+                        "max_hp": 80,
+                        "gold": 140,
+                        "deck": [{"line": "Strike *5"}, {"name": "Bash", "upgraded": True}],
+                        "relics": ["Burning Blood"],
+                        "relic_descriptions": ["At the end of combat, heal 6 HP."],
+                        "potions": [
+                            {"name": "Fire Potion", "description": "Deal 20 damage.", "occupied": True},
+                            {"occupied": False},
+                        ],
+                    },
+                    "map": {"options": [{"i": 0, "node_type": "Rest", "coord": "2,1"}]},
+                }
+            },
+            [],
+        )
+        self.assertEqual(sliced["character"], "Ironclad")
+        self.assertEqual(sliced["hp"], "62/80")
+        self.assertEqual(sliced["deck"], ["Strike *5", "Bash+"])
+        self.assertEqual(sliced["relics"], ["Burning Blood: At the end of combat, heal 6 HP."])
+        self.assertEqual(sliced["potions"], ["Fire Potion: Deal 20 damage."])
+        self.assertEqual(sliced["nodes"][0]["node_type"], "Rest")
 
     def test_reward_choice_includes_current_deck(self) -> None:
         sliced = _slice_state(
