@@ -28,6 +28,10 @@ class OpenJevProClient:
         if backend == "auto":
             if "11434" in self.base_url:
                 self.backend = "ollama"
+            elif ":1234" in self.base_url:
+                # LM Studio's default port. Its /completions route drops logprobs,
+                # and Gemma 4 reasons by default, so decisions use chat logprobs.
+                self.backend = "lmstudio"
             else:
                 self.backend = "openai"
         else:
@@ -51,8 +55,9 @@ class OpenJevProClient:
 
         if self.backend == "ollama":
             return self._decide_choice_ollama(state, options, criteria, allow_abstain)
-        else:
-            return self._decide_choice_openai(state, options, criteria, allow_abstain)
+        if self.backend == "lmstudio":
+            return self._decide_choice_lmstudio(state, options, criteria, allow_abstain)
+        return self._decide_choice_openai(state, options, criteria, allow_abstain)
 
     def _decide_choice_ollama(
         self,
@@ -169,6 +174,98 @@ class OpenJevProClient:
         for letter, opt in option_map.items():
             l_prob = choice_logprobs.get(letter) or choice_logprobs.get(f" {letter}") or -100.0
             extracted_logits[opt] = float(l_prob)
+
+        calibrated_probs = self.calibrator.calibrate(extracted_logits)
+        best_choice = max(calibrated_probs, key=calibrated_probs.get)
+        confidence = calibrated_probs[best_choice]
+
+        abstained = False
+        if (allow_abstain and best_choice == "UNKNOWN") or confidence < self.abstain_threshold:
+            abstained = True
+
+        return ChoiceDecision(
+            value=best_choice,
+            probabilities=calibrated_probs,
+            confidence=confidence,
+            abstained=abstained,
+            raw_logits=extracted_logits,
+        )
+
+    def _decide_choice_lmstudio(
+        self,
+        state: Dict[str, Any],
+        options: List[str],
+        criteria: Union[str, Dict[str, str]],
+        allow_abstain: bool
+    ) -> ChoiceDecision:
+        """1-token letter choice via LM Studio chat logprobs.
+
+        Gemma 4 on LM Studio leaves /v1/completions logprobs empty and spends
+        the token budget on reasoning unless reasoning_effort is "none".
+        """
+        letters = [chr(65 + i) for i in range(len(options))]
+        option_map = {letter: opt for letter, opt in zip(letters, options)}
+
+        if isinstance(criteria, dict):
+            crit_text = "\n".join([f"- {k}: {v}" for k, v in criteria.items()])
+        else:
+            crit_text = str(criteria)
+
+        options_prompt = "\n".join([f"{letter}. {opt}" for letter, opt in option_map.items()])
+        prompt = (
+            f"Given the following state:\n{json.dumps(state, ensure_ascii=False, indent=2)}\n\n"
+            f"Evaluation criteria:\n{crit_text}\n\n"
+            f"Select the single best option from the list below:\n{options_prompt}\n\n"
+            f"Reply with ONLY the option letter (e.g. A, B, C):"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1,
+            "temperature": 0.0,
+            "logprobs": True,
+            "top_logprobs": 20,
+            "reasoning_effort": "none",
+        }
+
+        resp = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        logprobs = (data.get("choices") or [{}])[0].get("logprobs") or {}
+        content_entries = logprobs.get("content") or []
+        top_logprobs = content_entries[0].get("top_logprobs") if content_entries else None
+        if not top_logprobs:
+            raise RuntimeError(
+                "LM Studio chat completion returned no token logprobs. "
+                "Enable logprobs on the loaded model and keep reasoning off."
+            )
+
+        choice_logprobs: Dict[str, float] = {}
+        for item in top_logprobs:
+            token = item.get("token")
+            if not isinstance(token, str):
+                continue
+            logprob = float(item["logprob"])
+            previous = choice_logprobs.get(token)
+            if previous is None or logprob > previous:
+                choice_logprobs[token] = logprob
+
+        extracted_logits: Dict[str, float] = {}
+        for letter, opt in option_map.items():
+            extracted_logits[opt] = float(
+                choice_logprobs.get(letter, choice_logprobs.get(f" {letter}", -100.0))
+            )
 
         calibrated_probs = self.calibrator.calibrate(extracted_logits)
         best_choice = max(calibrated_probs, key=calibrated_probs.get)
