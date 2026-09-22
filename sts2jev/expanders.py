@@ -74,7 +74,7 @@ def _play_card(state: dict[str, Any]) -> list[Candidate]:
         name = item_label(card, "name", "line", "card_id")
         cost = card.get("energy_cost")
         cost_bit = f"{cost} energy" if cost is not None else "card"
-        if flag(card, "requires_target"):
+        if _card_needs_target(card):
             target_ids = target_indices(card) or [
                 item_index(enemy, i)
                 for i, enemy in enumerate(enemies)
@@ -104,6 +104,15 @@ def _play_card(state: dict[str, Any]) -> list[Candidate]:
                 )
             )
     return out
+
+
+def _card_needs_target(card: dict[str, Any]) -> bool:
+    if flag(card, "requires_target"):
+        return True
+    if target_indices(card):
+        return True
+    target = card.get("target") or card.get("target_type")
+    return target not in (None, "", "None", "Self", "none")
 
 
 def _enemy_by_index(enemies: list[dict[str, Any]], target_index: int) -> dict[str, Any]:

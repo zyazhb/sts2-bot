@@ -10,7 +10,7 @@ from typing import Any
 from openjevpro.schemas import ChoiceDecision
 
 from sts2jev.candidates import Candidate, expand
-from sts2jev.decide import decide_action, group_by_action, group_by_index
+from sts2jev.decide import collapse_equivalent, decide_action, group_by_action, group_by_index
 from sts2jev.loop import StopPlay, _correct_once, _should_wait_combat, run_loop
 
 
@@ -53,6 +53,34 @@ class ExpandTests(unittest.TestCase):
         strike = next(item for item in result.candidates if item.id == "play_card:0:target:0")
         self.assertEqual(strike.body, {"action": "play_card", "card_index": 0, "target_index": 0})
         self.assertIn("7 dmg", strike.label)
+
+    def test_compact_target_array_expands_enemies(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["play_card", "end_turn"],
+                "state": {
+                    "screen": "COMBAT",
+                    "combat": {
+                        "hand": [
+                            {
+                                "i": 0,
+                                "line": "Strike [1 Energy]: Deal 6 damage.",
+                                "playable": True,
+                                "energy_cost": 1,
+                                "target": "enemies",
+                                "targets": [0, 1],
+                            }
+                        ],
+                        "enemies": [
+                            {"i": 0, "name": "Slime A", "hp": "8/8", "alive": True, "hittable": True},
+                            {"i": 1, "name": "Slime B", "hp": "13/13", "alive": True, "hittable": True},
+                        ],
+                    },
+                },
+            }
+        )
+        ids = [item.id for item in result.candidates]
+        self.assertEqual(ids, ["play_card:0:target:0", "play_card:0:target:1", "end_turn"])
 
     def test_shop_filters_unaffordable_and_unstocked(self) -> None:
         result = expand(load_fixture("shop.json"))
@@ -141,6 +169,67 @@ class LayerTests(unittest.TestCase):
         decision = decide_action(jev, snapshot, result.candidates)
         self.assertTrue(decision.abstained)
         self.assertIsNone(decision.candidate)
+
+    def test_collapse_identical_labels_keeps_first(self) -> None:
+        cards = [
+            Candidate(
+                id=f"select_deck_card:{index}",
+                action="select_deck_card",
+                label=label,
+                body={"action": "select_deck_card", "option_index": index},
+                index_key=index,
+            )
+            for index, label in enumerate(
+                ["Strike"] * 5 + ["Defend"] * 4 + ["Bash"]
+            )
+        ]
+        unique = collapse_equivalent(cards)
+        self.assertEqual([item.id for item in unique], [
+            "select_deck_card:0",
+            "select_deck_card:5",
+            "select_deck_card:9",
+        ])
+        jev = ScriptedJev(["select_deck_card:0"])
+        decision = decide_action(jev, {"state": {"screen": "CARD_SELECTION"}}, cards)
+        self.assertFalse(decision.abstained)
+        assert decision.candidate is not None
+        self.assertEqual(decision.candidate.id, "select_deck_card:0")
+        self.assertEqual(len(jev.calls[0]), 3)
+
+    def test_all_equivalent_picks_without_model(self) -> None:
+        cards = [
+            Candidate(
+                id=f"select_deck_card:{index}",
+                action="select_deck_card",
+                label="Strike",
+                body={"action": "select_deck_card", "option_index": index},
+                index_key=index,
+            )
+            for index in range(5)
+        ]
+        jev = ScriptedJev([])
+        decision = decide_action(jev, {"state": {"screen": "CARD_SELECTION"}}, cards)
+        self.assertEqual(decision.reason, "equivalent")
+        assert decision.candidate is not None
+        self.assertEqual(decision.candidate.id, "select_deck_card:0")
+        self.assertEqual(jev.calls, [])
+
+    def test_abstain_falls_back_to_majority_duplicate(self) -> None:
+        cards = [
+            Candidate(
+                id=f"select_deck_card:{index}",
+                action="select_deck_card",
+                label=label,
+                body={"action": "select_deck_card", "option_index": index},
+                index_key=index,
+            )
+            for index, label in enumerate(["Strike"] * 5 + ["Defend"] * 4 + ["Bash"])
+        ]
+        jev = ScriptedJev(["UNKNOWN"])
+        decision = decide_action(jev, {"state": {"screen": "CARD_SELECTION"}}, cards)
+        self.assertEqual(decision.reason, "equivalent")
+        assert decision.candidate is not None
+        self.assertEqual(decision.candidate.id, "select_deck_card:0")
 
 
 class FakeGame:

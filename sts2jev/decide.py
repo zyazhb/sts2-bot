@@ -21,6 +21,18 @@ class ActionDecision:
     reason: str = ""
 
 
+def collapse_equivalent(candidates: list[Candidate]) -> list[Candidate]:
+    """Keep the first candidate for each identical action+label pair."""
+    return [items[0] for items in equivalent_groups(candidates).values()]
+
+
+def equivalent_groups(candidates: list[Candidate]) -> dict[str, list[Candidate]]:
+    grouped: dict[str, list[Candidate]] = {}
+    for item in candidates:
+        grouped.setdefault(f"{item.action}\n{item.label}", []).append(item)
+    return grouped
+
+
 def decide_action(
     client: OpenJevProClient,
     snapshot: dict[str, Any],
@@ -28,7 +40,11 @@ def decide_action(
 ) -> ActionDecision:
     if not candidates:
         return ActionDecision(None, None, True, "no candidates")
-    remaining = candidates
+    pool = candidates
+    remaining = collapse_equivalent(pool)
+    auto = _auto_pick_equivalent(pool, remaining)
+    if auto is not None:
+        return auto
     for grouping in (group_by_action, group_by_index, group_by_target):
         if len(remaining) <= LETTER_LIMIT:
             break
@@ -37,9 +53,53 @@ def decide_action(
             continue
         picked = _choose_group(client, snapshot, groups)
         if picked.abstained or picked.candidate is None:
-            return picked
-        remaining = groups.get(picked.candidate.id, remaining)
-    return _one_shot(client, snapshot, remaining)
+            fallback = _majority_pick(pool)
+            return fallback if fallback is not None else picked
+        pool = groups.get(picked.candidate.id, remaining)
+        remaining = collapse_equivalent(pool)
+        auto = _auto_pick_equivalent(pool, remaining)
+        if auto is not None:
+            return auto
+    remaining = collapse_equivalent(pool)
+    auto = _auto_pick_equivalent(pool, remaining)
+    if auto is not None:
+        return auto
+    result = _one_shot(client, snapshot, remaining)
+    if result.abstained:
+        fallback = _majority_pick(pool)
+        if fallback is not None:
+            return fallback
+    return result
+
+
+def _majority_pick(candidates: list[Candidate]) -> ActionDecision | None:
+    groups = equivalent_groups(candidates)
+    if not groups:
+        return None
+    largest = max(groups.values(), key=len)
+    if len(largest) < 2:
+        return None
+    return _auto_pick_equivalent(largest, [largest[0]])
+
+
+def _auto_pick_equivalent(
+    original: list[Candidate],
+    collapsed: list[Candidate],
+) -> ActionDecision | None:
+    if len(original) <= 1 or len(collapsed) != 1:
+        return None
+    item = collapsed[0]
+    return ActionDecision(
+        item,
+        ChoiceDecision(
+            value=item.id,
+            probabilities={item.id: 1.0},
+            confidence=1.0,
+            abstained=False,
+        ),
+        False,
+        "equivalent",
+    )
 
 
 def group_by_action(candidates: list[Candidate]) -> dict[str, list[Candidate]]:

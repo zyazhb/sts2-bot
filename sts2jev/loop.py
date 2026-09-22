@@ -77,7 +77,9 @@ def run_loop(
             continue
         same_abstain = 0
         last_fingerprint = fingerprint
-        _submit(game, decision, poll_s=poll_s)
+        outcome = _submit(game, decision, poll_s=poll_s)
+        if outcome == "stale":
+            continue
 
 
 def _should_wait_combat(state: dict[str, Any]) -> bool:
@@ -113,7 +115,7 @@ def _finish_game_over(game: Sts2Client, expanded: ExpandResult) -> None:
     raise StopPlay("game over complete")
 
 
-def _submit(game: Sts2Client, decision: ActionDecision, *, poll_s: float) -> None:
+def _submit(game: Sts2Client, decision: ActionDecision, *, poll_s: float) -> str:
     candidate = decision.candidate
     choice = decision.choice
     if candidate is None or choice is None:
@@ -122,17 +124,20 @@ def _submit(game: Sts2Client, decision: ActionDecision, *, poll_s: float) -> Non
     body["client_context"] = {
         "decision_reason": f"choice={candidate.id} confidence={choice.confidence:.4f}"
     }
-    print(f"act {candidate.id} ({candidate.label}) conf={choice.confidence:.2%}")
+    note = f" {decision.reason}" if decision.reason else ""
+    print(f"act {candidate.id} ({candidate.label}) conf={choice.confidence:.2%}{note}")
     try:
         result = game.act(body)
     except Sts2HttpError as exc:
         if exc.retryable or exc.code in RETRYABLE_CODES:
             time.sleep(poll_s)
-            return
+            return "retry"
         if exc.code in {"invalid_action", "invalid_target"}:
             corrected = _correct_once(candidate, exc.details)
             if corrected is None:
-                raise StopPlay(f"{exc.code}: {exc.message}", candidates=[candidate]) from exc
+                print(f"stale {exc.code}: {exc.message}")
+                time.sleep(poll_s)
+                return "stale"
             print(f"correct {exc.details.get('field')} -> {corrected.body}")
             try:
                 game.act(
@@ -142,16 +147,16 @@ def _submit(game: Sts2Client, decision: ActionDecision, *, poll_s: float) -> Non
                     }
                 )
             except Sts2HttpError as retry_exc:
-                raise StopPlay(
-                    f"correction failed: {retry_exc.code} {retry_exc.message}",
-                    candidates=[corrected],
-                ) from retry_exc
-            return
+                print(f"stale {retry_exc.code}: {retry_exc.message}")
+                time.sleep(poll_s)
+                return "stale"
+            return "ok"
         raise StopPlay(f"{exc.code}: {exc.message}", candidates=[candidate]) from exc
     if result.get("status") == "failed":
         raise StopPlay(f"action failed: {result.get('message')}", candidates=[candidate])
     if result.get("status") == "pending":
         time.sleep(poll_s)
+    return "ok"
 
 
 def _correct_once(candidate: Candidate, details: dict[str, Any]) -> Candidate | None:
