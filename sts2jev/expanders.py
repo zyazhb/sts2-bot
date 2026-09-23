@@ -162,7 +162,7 @@ def _potion_action(state: dict[str, Any], action: str, ready_keys: tuple[str, ..
             continue
         option_index = item_index(potion, offset)
         name = _potion_text(potion)
-        if action == "use_potion" and flag(potion, "requires_target"):
+        if action == "use_potion" and _card_needs_target(potion):
             for target_index in target_indices(potion) or [
                 item_index(enemy, i)
                 for i, enemy in enumerate(enemies)

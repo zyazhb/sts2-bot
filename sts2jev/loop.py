@@ -9,6 +9,7 @@ from openjevpro.client import OpenJevProClient
 from openjevpro.schemas import ChoiceDecision
 
 from sts2jev.candidates import Candidate, ExpandResult, PAUSE_SCREENS, expand
+from sts2jev.combat_rank import narrow_combat
 from sts2jev.decide import ActionDecision, decide_action
 from sts2jev.http import Sts2Client, Sts2HttpError
 
@@ -74,6 +75,8 @@ def run_loop(
             raise StopPlay(f"no legal candidates on {screen}")
 
         pool = _without_early_end(expanded.candidates, state)
+        if screen == "COMBAT":
+            pool = narrow_combat(pool)
         decision = _end_turn_if_no_play(pool)
         if decision is None:
             decision = decide_action(jev, _prompt_snapshot(game, snapshot), pool)

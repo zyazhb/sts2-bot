@@ -55,7 +55,7 @@ def decide_action(
             continue
         picked = _choose_group(client, snapshot, groups)
         if picked.abstained or picked.candidate is None:
-            return _fallback_pick(pool, "model abstained while choosing an action group")
+            return _random_pick(remaining, "model abstained while choosing an action group")
         pool = groups.get(picked.candidate.id, remaining)
         remaining = collapse_equivalent(pool)
         auto = _auto_pick_equivalent(pool, remaining)
@@ -67,15 +67,8 @@ def decide_action(
         return auto
     result = _one_shot(client, snapshot, remaining)
     if result.abstained:
-        return _fallback_pick(pool, "model abstained")
+        return _random_pick(remaining, "model abstained")
     return result
-
-
-def _fallback_pick(candidates: list[Candidate], why: str) -> ActionDecision:
-    majority = _majority_pick(candidates)
-    if majority is not None:
-        return majority
-    return _random_pick(candidates, why)
 
 
 def _random_pick(candidates: list[Candidate], why: str) -> ActionDecision:
@@ -96,14 +89,21 @@ def _random_pick(candidates: list[Candidate], why: str) -> ActionDecision:
     )
 
 
-def _majority_pick(candidates: list[Candidate]) -> ActionDecision | None:
-    groups = equivalent_groups(candidates)
-    if not groups:
+def _best_option(choice: ChoiceDecision | None, allowed: list[str]) -> str | None:
+    """Highest positive probability among the options actually offered."""
+    if choice is None:
         return None
-    largest = max(groups.values(), key=len)
-    if len(largest) < 2:
-        return None
-    return _auto_pick_equivalent(largest, [largest[0]])
+    best_id: str | None = None
+    best_prob = 0.0
+    probs = choice.probabilities or {}
+    for option in allowed:
+        if option == "UNKNOWN":
+            continue
+        prob = float(probs.get(option) or 0.0)
+        if prob > best_prob:
+            best_prob = prob
+            best_id = option
+    return best_id
 
 
 def _auto_pick_equivalent(
@@ -203,7 +203,11 @@ def _one_shot(
         allow_abstain=True,
     )
     if choice.abstained or choice.value not in options:
-        return ActionDecision(None, choice, True, "abstained")
+        best = _best_option(choice, options)
+        if best is None:
+            return ActionDecision(None, choice, True, "abstained")
+        selected = next(item for item in candidates if item.id == best)
+        return ActionDecision(selected, choice, False, "probability")
     selected = next(item for item in candidates if item.id == choice.value)
     return ActionDecision(selected, choice, False)
 
@@ -212,14 +216,9 @@ def _criteria(snapshot: dict[str, Any]) -> str:
     screen = (snapshot.get("state") or {}).get("screen")
     rules = {
         "COMBAT": (
-            "Finish the fight with as much HP left as possible. "
-            "Spend energy to block or remove the damage coming this turn. "
-            "Do not end the turn while a card can still be played, unless every remaining play is an attack into Thorns or Reflect. "
-            "The state lists this turn's hand, draw, discard, exhaust, relics, potions, keyword glossary, "
-            "and each enemy's next move. Read those, including every power description, before you play, "
-            "discard a potion, or end the turn. "
-            "Do not attack Thorns or Reflect unless the HP lost is less than letting that enemy act. "
-            "Play toward a stronger deck and clearing the run."
+            "Finish the fight with as much HP left as possible. ",
+            "If damage is better than block, prioritize damage.",
+            "intent means the next action the monster will make after this turn, if it survives this turn"
         ),
         "REWARD": (
             "Compare offered cards with the current deck. Take a card that clearly improves it; otherwise skip. "
@@ -231,10 +230,10 @@ def _criteria(snapshot: dict[str, Any]) -> str:
         ),
         "EVENT": "Prefer unlocked options. Avoid options marked KILLS unless no alternative remains.",
         "MAP": (
-            "Choose the next node from this character's deck, relics, potions, HP, and gold. "
+            "Choose the next node based on character's deck, relics, potions, HP, and gold. "
             "Prefer rest when wounded, a shop when gold can buy something useful, and an elite when the deck is strong."
         ),
-        "REST": "Heal when missing substantial HP; smith when HP is comfortable.",
+        "REST": "Smith when HP is comfortable.",
         "CHEST": "Take the relic that best fits the current deck.",
         "CARD_SELECTION": "Pick the card that the prompt is asking to remove, upgrade, or transform.",
     }

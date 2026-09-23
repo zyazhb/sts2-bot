@@ -421,6 +421,40 @@ class ExpandTests(unittest.TestCase):
         )
         self.assertEqual([item.id for item in result.candidates], ["close_shop_inventory"])
 
+    def test_enemy_potion_expands_each_target(self) -> None:
+        result = expand(
+            {
+                "available_actions": ["use_potion", "discard_potion"],
+                "state": {
+                    "screen": "COMBAT",
+                    "run": {
+                        "potions": [
+                            {
+                                "i": 0,
+                                "line": "0: Fire Potion: CombatOnly",
+                                "description": "Deal [blue]{Damage}[/blue] damage.",
+                                "usable": True,
+                                "discard": True,
+                                "target": "enemy",
+                                "targets": [0, 1],
+                            }
+                        ]
+                    },
+                    "combat": {
+                        "enemies": [
+                            {"i": 0, "name": "Corpse Slug", "hp": "8/25", "alive": True, "hittable": True},
+                            {"i": 1, "name": "Corpse Slug", "hp": "27/27", "alive": True, "hittable": True},
+                        ]
+                    },
+                },
+            }
+        )
+        uses = [item for item in result.candidates if item.action == "use_potion"]
+        discards = [item for item in result.candidates if item.action == "discard_potion"]
+        self.assertEqual([item.body.get("target_index") for item in uses], [0, 1])
+        self.assertEqual(len(discards), 1)
+        self.assertNotIn("target_index", discards[0].body)
+
     def test_potion_label_includes_effect(self) -> None:
         result = expand(
             {
@@ -646,7 +680,7 @@ class LayerTests(unittest.TestCase):
         self.assertEqual(decision.candidate.id, "select_deck_card:0")
         self.assertEqual(jev.calls, [])
 
-    def test_abstain_falls_back_to_majority_duplicate(self) -> None:
+    def test_abstain_without_probabilities_is_random(self) -> None:
         cards = [
             Candidate(
                 id=f"select_deck_card:{index}",
@@ -658,10 +692,32 @@ class LayerTests(unittest.TestCase):
             for index, label in enumerate(["Strike"] * 5 + ["Defend"] * 4 + ["Bash"])
         ]
         jev = ScriptedJev(["UNKNOWN"])
-        decision = decide_action(jev, {"state": {"screen": "CARD_SELECTION"}}, cards)
-        self.assertEqual(decision.reason, "equivalent")
+        with patch("sts2jev.decide.random.choice", lambda items: items[-1]):
+            decision = decide_action(jev, {"state": {"screen": "CARD_SELECTION"}}, cards)
+        self.assertEqual(decision.reason, "random")
         assert decision.candidate is not None
-        self.assertEqual(decision.candidate.id, "select_deck_card:0")
+        self.assertEqual(decision.candidate.id, "select_deck_card:9")
+
+    def test_low_confidence_uses_highest_probability(self) -> None:
+        cards = [
+            Candidate(id="play_card:0", action="play_card", label="Strike", body={"action": "play_card"}),
+            Candidate(id="play_card:1", action="play_card", label="Pommel Strike", body={"action": "play_card"}),
+        ]
+
+        class RankedJev:
+            def decide_choice(self, state, candidates, criteria="", allow_abstain=True):
+                del state, criteria, allow_abstain
+                return ChoiceDecision(
+                    value="UNKNOWN",
+                    probabilities={"UNKNOWN": 0.4, "play_card:0": 0.25, "play_card:1": 0.35},
+                    confidence=0.3,
+                    abstained=True,
+                )
+
+        decision = decide_action(RankedJev(), {"state": {"screen": "COMBAT"}}, cards)
+        self.assertEqual(decision.reason, "probability")
+        assert decision.candidate is not None
+        self.assertEqual(decision.candidate.id, "play_card:1")
 
 
 class FakeGame:
@@ -754,7 +810,7 @@ class LoopTests(unittest.TestCase):
                 "screen": "COMBAT",
                 "combat": {
                     "action_readiness": {"can_use_combat_actions": True},
-                    "player": {"hp": "70/80", "energy": 2, "block": 0},
+                    "player": {"hp": "12/80", "energy": 2, "block": 0},
                     "hand": [
                         {
                             "i": 0,
@@ -771,7 +827,16 @@ class LoopTests(unittest.TestCase):
                             "targets": [0],
                         },
                     ],
-                    "enemies": [{"i": 0, "name": "Gremlin Merc", "hp": "52/52", "alive": True, "hittable": True}],
+                    "enemies": [
+                        {
+                            "i": 0,
+                            "name": "Gremlin Merc",
+                            "hp": "52/52",
+                            "alive": True,
+                            "hittable": True,
+                            "intents": [{"intent_type": "Attack", "total_damage": 14}],
+                        }
+                    ],
                 },
             },
         }
